@@ -1,0 +1,81 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>商户端</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <h1>商户端</h1>
+      <div>
+        <button id="toggleHeatBtn">切换热力图</button>
+        <button id="refreshBtn">刷新数据</button>
+        <button id="logoutBtn">退出登录</button>
+      </div>
+    </header>
+
+    <main class="page stack-gap">
+      <section class="card">
+        <h2>夜市分布与选点</h2>
+        <div class="inline-form">
+          <input id="searchInput" type="text" placeholder="搜索位置，例如：扬帆夜市" />
+          <button id="searchBtn" type="button">地图搜索</button>
+          <span class="hint">可在地图点击选点，经纬度将自动填入表单</span>
+        </div>
+        <div id="merchantMap" class="map-box map-mid"></div>
+      </section>
+
+      <section class="grid-two">
+        <section class="card">
+          <h2>摊位新增/修改申请</h2>
+          <form id="merchantForm" class="form-grid">
+            <label>操作类型
+              <select name="mode" id="modeSelect">
+                <option value="create">新增摊位</option>
+                <option value="update">修改已有摊位</option>
+              </select>
+            </label>
+            <label id="targetWrap" class="hidden">选择要修改的摊位
+              <select name="target_stall_id" id="targetStallSelect"></select>
+            </label>
+            <label>摊位名<input name="name" required /></label>
+            <label>经营类别<input name="category" required /></label>
+            <label>营业时间<input name="open_time" placeholder="18:00-23:00" required /></label>
+            <label>图片URL<input name="image_url" placeholder="https://..." /></label>
+            <label>经度<input id="lngInput" name="lng" type="number" step="0.000001" required /></label>
+            <label>纬度<input id="latInput" name="lat" type="number" step="0.000001" required /></label>
+            <label>简介<textarea name="description" rows="3"></textarea></label>
+            <button type="submit">提交审核</button>
+          </form>
+          <p id="merchantMsg" class="hint"></p>
+        </section>
+
+        <section class="card">
+          <h2>我的摊位</h2>
+          <ul id="myStallsList" class="list"></ul>
+          <h2>我的提交记录</h2>
+          <ul id="mySubmissionsList" class="list"></ul>
+        </section>
+      </section>
+
+      <section class="card">
+        <h2>顾客评价与回复</h2>
+        <div class="inline-form">
+          <select id="reviewStallFilter">
+            <option value="">全部摊位</option>
+          </select>
+          <button id="loadMerchantReviewsBtn" type="button">刷新评价</button>
+        </div>
+        <ul id="merchantReviewsList" class="list"></ul>
+      </section>
+    </main>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/leaflet.heat/dist/leaflet-heat.js"></script>
+    <script src="./auth.js"></script>
+    <script src="./merchant.js"></script>
+  </body>
+</html>

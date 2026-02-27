@@ -1,0 +1,51 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>审核记录</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <h1>审核记录</h1>
+      <div>
+        <a class="nav-btn" href="./admin.html">管理员首页</a>
+        <a class="nav-btn" href="./admin-submissions.html">摊位审核</a>
+        <a class="nav-btn" href="./admin-reviews.html">评价审核</a>
+        <a class="nav-btn" href="./admin-users.html">用户管理</a>
+        <button id="logoutBtn">退出登录</button>
+      </div>
+    </header>
+
+    <main class="page stack-gap">
+      <section class="card">
+        <h2>审核记录</h2>
+        <div class="inline-form">
+          <select id="logEntityFilter">
+            <option value="">全部类型</option>
+            <option value="submission">摊位提交</option>
+            <option value="review">评价审核</option>
+            <option value="user">用户管理</option>
+          </select>
+          <select id="logActionFilter">
+            <option value="">全部动作</option>
+            <option value="approve">通过</option>
+            <option value="reject">驳回</option>
+            <option value="create">创建</option>
+            <option value="freeze">冻结</option>
+            <option value="unfreeze">解冻</option>
+            <option value="delete">删除</option>
+          </select>
+          <input id="logSearchInput" placeholder="搜索操作者/详情" />
+          <button id="loadLogsBtn" type="button">刷新记录</button>
+        </div>
+        <ul id="auditLogList" class="list"></ul>
+      </section>
+      <p id="adminMsg" class="hint"></p>
+    </main>
+
+    <script src="./auth.js"></script>
+    <script src="./admin-logs.js"></script>
+  </body>
+</html>

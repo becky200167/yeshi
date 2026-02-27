@@ -1,0 +1,66 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>用户端</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <h1>用户端</h1>
+      <div>
+        <button id="refreshBtn">刷新数据</button>
+        <button id="toggleHeatBtn">切换热力图</button>
+        <button id="logoutBtn">退出登录</button>
+      </div>
+    </header>
+
+    <main class="page grid-two">
+      <section id="map" class="map-box"></section>
+
+      <section class="card side-panel">
+        <h2 id="selectedStallTitle">请先点击地图上的摊位</h2>
+        <div id="selectedStallDetail" class="hint">右侧将显示摊位详情</div>
+        <p id="reviewMsg" class="hint"></p>
+        <p id="reviewSummary" class="hint">暂无评分汇总</p>
+
+        <div class="panel-actions">
+          <button id="loadReviewsBtn">刷新当前摊位评价</button>
+        </div>
+        <ul id="reviewList" class="list"></ul>
+      </section>
+    </main>
+
+    <div id="reviewModal" class="modal hidden">
+      <div class="modal-card">
+        <h3 id="reviewModalTitle">提交评价</h3>
+        <form id="reviewForm" class="form-grid">
+          <input type="hidden" id="reviewStallId" name="stall_id" />
+          <label>评分
+            <select name="rating" required>
+              <option value="5">5 星</option>
+              <option value="4">4 星</option>
+              <option value="3">3 星</option>
+              <option value="2">2 星</option>
+              <option value="1">1 星</option>
+            </select>
+          </label>
+          <label>评价内容
+            <textarea name="content" rows="4" required></textarea>
+          </label>
+          <div class="panel-actions">
+            <button type="submit">提交评价</button>
+            <button type="button" id="closeReviewModalBtn">取消</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/leaflet.heat/dist/leaflet-heat.js"></script>
+    <script src="./auth.js"></script>
+    <script src="./user.js"></script>
+  </body>
+</html>

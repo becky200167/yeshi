@@ -1,0 +1,55 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>用户管理</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <h1>用户管理</h1>
+      <div>
+        <a class="nav-btn" href="./admin.html">管理员首页</a>
+        <a class="nav-btn" href="./admin-submissions.html">摊位审核</a>
+        <a class="nav-btn" href="./admin-reviews.html">评价审核</a>
+        <a class="nav-btn" href="./admin-logs.html">审核记录</a>
+        <button id="logoutBtn">退出登录</button>
+      </div>
+    </header>
+
+    <main class="page stack-gap">
+      <section class="card">
+        <h2>账号管理</h2>
+        <form id="createUserForm" class="inline-form">
+          <input name="username" placeholder="新账号用户名" required />
+          <input name="password" placeholder="初始密码" required />
+          <select name="role">
+            <option value="merchant">商户账号</option>
+            <option value="user">用户账号</option>
+          </select>
+          <button type="submit">创建账号</button>
+        </form>
+        <div class="inline-form">
+          <input id="userSearchInput" placeholder="搜索用户名" />
+          <select id="userRoleFilter">
+            <option value="">全部角色</option>
+            <option value="merchant">商户</option>
+            <option value="user">用户</option>
+          </select>
+          <select id="userStatusFilter">
+            <option value="">全部状态</option>
+            <option value="active">正常</option>
+            <option value="frozen">冻结</option>
+          </select>
+          <button id="loadUsersBtn" type="button">刷新账号列表</button>
+        </div>
+        <ul id="adminUsersList" class="list"></ul>
+      </section>
+      <p id="adminMsg" class="hint"></p>
+    </main>
+
+    <script src="./auth.js"></script>
+    <script src="./admin-users.js"></script>
+  </body>
+</html>

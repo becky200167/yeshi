@@ -1,0 +1,275 @@
+﻿:root {
+  --bg: #f6f5f2;
+  --card: #ffffff;
+  --text: #1f2937;
+  --accent: #c2410c;
+  --border: #d4d4d8;
+  --muted: #6b7280;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Microsoft YaHei", sans-serif;
+  color: var(--text);
+  background: radial-gradient(circle at top left, #fff7ed, var(--bg));
+}
+
+.container {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+.page {
+  padding: 12px;
+}
+
+.stack-gap {
+  display: grid;
+  gap: 12px;
+}
+
+.grid-two {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(300px, 2fr) minmax(260px, 1fr);
+}
+
+.hint {
+  color: var(--muted);
+}
+
+.role-grid {
+  margin-top: 18px;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(3, minmax(180px, 1fr));
+}
+
+.role-card {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 130px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  text-decoration: none;
+  color: var(--text);
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.role-card:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.form-wrap {
+  max-width: 460px;
+  padding-top: 42px;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+}
+
+.form-grid {
+  display: grid;
+  gap: 10px;
+}
+
+label {
+  display: grid;
+  gap: 4px;
+}
+
+input,
+textarea,
+select,
+button {
+  font: inherit;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  padding: 8px;
+}
+
+button {
+  cursor: pointer;
+  background: #fff;
+}
+
+button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.topbar {
+  background: #fff;
+  border-bottom: 1px solid var(--border);
+  padding: 12px 18px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.topbar h1 {
+  margin: 0;
+  font-size: 22px;
+}
+
+.topbar > div {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.nav-btn {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+  background: #fff;
+}
+
+.nav-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.nav-card {
+  text-decoration: none;
+  color: inherit;
+}
+
+.nav-card:hover {
+  border-color: var(--accent);
+}
+
+.map-box {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  min-height: 420px;
+}
+
+.map-mid {
+  min-height: 360px;
+}
+
+.side-panel {
+  max-height: calc(100vh - 110px);
+  overflow: auto;
+}
+
+.inline-form {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.panel-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.list {
+  list-style: none;
+  padding: 0;
+  margin: 10px 0 0;
+}
+
+.list-item {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+  margin-bottom: 8px;
+}
+
+.reply-box {
+  margin-top: 6px;
+  padding: 6px 8px;
+  border-left: 3px solid #f59e0b;
+  background: #fffbeb;
+}
+
+.stall-thumb {
+  width: 100%;
+  max-width: 240px;
+  max-height: 140px;
+  object-fit: cover;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-top: 6px;
+}
+
+.popup-thumb {
+  width: 180px;
+  max-height: 120px;
+  object-fit: cover;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin: 6px 0;
+}
+
+.modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 999;
+}
+
+.modal-card {
+  width: min(520px, 92vw);
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px;
+}
+
+.hidden {
+  display: none;
+}
+
+.back-link {
+  display: inline-block;
+  margin-top: 12px;
+}
+
+@media (max-width: 1000px) {
+  .grid-two {
+    grid-template-columns: 1fr;
+  }
+
+  .side-panel {
+    max-height: none;
+  }
+}
+
+@media (max-width: 900px) {
+  .role-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .topbar {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+}

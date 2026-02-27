@@ -1,0 +1,320 @@
+[
+  {
+    "username": "admin01",
+    "password": "123456",
+    "role": "admin",
+    "status": "active"
+  },
+  {
+    "username": "merchant01",
+    "password": "123456",
+    "role": "merchant",
+    "status": "active"
+  },
+  {
+    "username": "merchant02",
+    "password": "123456",
+    "role": "merchant",
+    "status": "active"
+  },
+  {
+    "username": "merchant03",
+    "password": "123456",
+    "role": "merchant",
+    "status": "active"
+  },
+  {
+    "username": "merchant04",
+    "password": "123456",
+    "role": "merchant",
+    "status": "active"
+  },
+  {
+    "username": "merchant05",
+    "password": "123456",
+    "role": "merchant",
+    "status": "active"
+  },
+  {
+    "username": "merchant06",
+    "password": "123456",
+    "role": "merchant",
+    "status": "active"
+  },
+  {
+    "username": "merchant07",
+    "password": "123456",
+    "role": "merchant",
+    "status": "active"
+  },
+  {
+    "username": "merchant08",
+    "password": "123456",
+    "role": "merchant",
+    "status": "active"
+  },
+  {
+    "username": "merchant09",
+    "password": "123456",
+    "role": "merchant",
+    "status": "active"
+  },
+  {
+    "username": "merchant10",
+    "password": "123456",
+    "role": "merchant",
+    "status": "active"
+  },
+  {
+    "username": "merchant11",
+    "password": "123456",
+    "role": "merchant",
+    "status": "active"
+  },
+  {
+    "username": "merchant12",
+    "password": "123456",
+    "role": "merchant",
+    "status": "active"
+  },
+  {
+    "username": "user01",
+    "password": "123456",
+    "role": "user",
+    "status": "active"
+  },
+  {
+    "username": "user02",
+    "password": "123456",
+    "role": "user",
+    "status": "active"
+  },
+  {
+    "username": "user03",
+    "password": "123456",
+    "role": "user",
+    "status": "active"
+  },
+  {
+    "username": "user04",
+    "password": "123456",
+    "role": "user",
+    "status": "active"
+  },
+  {
+    "username": "user05",
+    "password": "123456",
+    "role": "user",
+    "status": "active"
+  },
+  {
+    "username": "user06",
+    "password": "123456",
+    "role": "user",
+    "status": "active"
+  },
+  {
+    "username": "user07",
+    "password": "123456",
+    "role": "user",
+    "status": "active"
+  },
+  {
+    "username": "user08",
+    "password": "123456",
+    "role": "user",
+    "status": "active"
+  },
+  {
+    "username": "user09",
+    "password": "123456",
+    "role": "user",
+    "status": "active"
+  },
+  {
+    "username": "user10",
+    "password": "123456",
+    "role": "user",
+    "status": "active"
+  },
+  {
+    "username": "user11",
+    "password": "123456",
+    "role": "user",
+    "status": "active"
+  },
+  {
+    "username": "user12",
+    "password": "123456",
+    "role": "user",
+    "status": "active"
+  },
+  {
+    "username": "user13",
+    "password": "123456",
+    "role": "user",
+    "status": "active"
+  },
+  {
+    "username": "user14",
+    "password": "123456",
+    "role": "user",
+    "status": "active"
+  },
+  {
+    "username": "user15",
+    "password": "123456",
+    "role": "user",
+    "status": "active"
+  },
+  {
+    "username": "user16",
+    "password": "123456",
+    "role": "user",
+    "status": "active"
+  },
+  {
+    "username": "user17",
+    "password": "123456",
+    "role": "user",
+    "status": "active"
+  },
+  {
+    "username": "user18",
+    "password": "123456",
+    "role": "user",
+    "status": "active"
+  },
+  {
+    "username": "user19",
+    "password": "123456",
+    "role": "user",
+    "status": "active"
+  },
+  {
+    "username": "user20",
+    "password": "123456",
+    "role": "user",
+    "status": "active"
+  },
+  {
+    "username": "user21",
+    "password": "123456",
+    "role": "user",
+    "status": "active"
+  },
+  {
+    "username": "user22",
+    "password": "123456",
+    "role": "user",
+    "status": "active"
+  },
+  {
+    "username": "user23",
+    "password": "123456",
+    "role": "user",
+    "status": "active"
+  },
+  {
+    "username": "user24",
+    "password": "123456",
+    "role": "user",
+    "status": "active"
+  },
+  {
+    "username": "user25",
+    "password": "123456",
+    "role": "user",
+    "status": "active"
+  },
+  {
+    "username": "user26",
+    "password": "123456",
+    "role": "user",
+    "status": "active"
+  },
+  {
+    "username": "user27",
+    "password": "123456",
+    "role": "user",
+    "status": "active"
+  },
+  {
+    "username": "user28",
+    "password": "123456",
+    "role": "user",
+    "status": "active"
+  },
+  {
+    "username": "user29",
+    "password": "123456",
+    "role": "user",
+    "status": "active"
+  },
+  {
+    "username": "user30",
+    "password": "123456",
+    "role": "user",
+    "status": "active"
+  },
+  {
+    "username": "user31",
+    "password": "123456",
+    "role": "user",
+    "status": "active"
+  },
+  {
+    "username": "user32",
+    "password": "123456",
+    "role": "user",
+    "status": "active"
+  },
+  {
+    "username": "user33",
+    "password": "123456",
+    "role": "user",
+    "status": "active"
+  },
+  {
+    "username": "user34",
+    "password": "123456",
+    "role": "user",
+    "status": "active"
+  },
+  {
+    "username": "user35",
+    "password": "123456",
+    "role": "user",
+    "status": "active"
+  },
+  {
+    "username": "user36",
+    "password": "123456",
+    "role": "user",
+    "status": "active"
+  },
+  {
+    "username": "user37",
+    "password": "123456",
+    "role": "user",
+    "status": "active"
+  },
+  {
+    "username": "user38",
+    "password": "123456",
+    "role": "user",
+    "status": "active"
+  },
+  {
+    "username": "user39",
+    "password": "123456",
+    "role": "user",
+    "status": "active"
+  },
+  {
+    "username": "user40",
+    "password": "123456",
+    "role": "user",
+    "status": "active"
+  }
+]

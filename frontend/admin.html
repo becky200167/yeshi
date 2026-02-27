@@ -1,0 +1,57 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>管理员首页</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <h1>管理员首页</h1>
+      <div>
+        <a class="nav-btn" href="./admin-submissions.html">摊位审核</a>
+        <a class="nav-btn" href="./admin-reviews.html">评价审核</a>
+        <a class="nav-btn" href="./admin-users.html">用户管理</a>
+        <a class="nav-btn" href="./admin-logs.html">审核记录</a>
+        <button id="toggleHeatBtn">切换热力图</button>
+        <button id="refreshMapBtn">刷新地图</button>
+        <button id="logoutBtn">退出登录</button>
+      </div>
+    </header>
+
+    <main class="page stack-gap">
+      <section class="card">
+        <h2>夜市分布</h2>
+        <div id="adminMap" class="map-box map-mid"></div>
+      </section>
+
+      <section class="grid-two">
+        <a class="card nav-card" href="./admin-submissions.html">
+          <h2>摊位审核</h2>
+          <p class="hint">查看商户提交，进行通过/驳回。</p>
+        </a>
+        <a class="card nav-card" href="./admin-reviews.html">
+          <h2>评价审核</h2>
+          <p class="hint">处理用户评价，支持通过、驳回、删除。</p>
+        </a>
+        <a class="card nav-card" href="./admin-users.html">
+          <h2>用户管理</h2>
+          <p class="hint">创建账号并进行冻结/解冻。</p>
+        </a>
+        <a class="card nav-card" href="./admin-logs.html">
+          <h2>审核记录</h2>
+          <p class="hint">查看管理员操作日志并检索记录。</p>
+        </a>
+      </section>
+
+      <p id="adminMsg" class="hint"></p>
+    </main>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/leaflet.heat/dist/leaflet-heat.js"></script>
+    <script src="./auth.js"></script>
+    <script src="./admin.js"></script>
+  </body>
+</html>

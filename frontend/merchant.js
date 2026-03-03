@@ -9,122 +9,169 @@ L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
 
 const allLayer = L.layerGroup().addTo(map);
 const ownLayer = L.layerGroup().addTo(map);
-let heatLayer = null;
-let heatVisible = false;
-let pickMarker = null;
+
 let myStalls = [];
-const HIDE_MARKERS_ZOOM = 14;
+let currentManagedStallId = null;
 
-const modeSelect = document.getElementById("modeSelect");
-const targetWrap = document.getElementById("targetWrap");
-const targetStallSelect = document.getElementById("targetStallSelect");
-const reviewStallFilter = document.getElementById("reviewStallFilter");
+const managedStallSelect = document.getElementById("managedStallSelect");
+const managedStallHint = document.getElementById("managedStallHint");
+const selectedStallTitle = document.getElementById("selectedStallTitle");
+const selectedStallDetail = document.getElementById("selectedStallDetail");
 const merchantMsg = document.getElementById("merchantMsg");
+const notificationDot = document.getElementById("notificationDot");
+const editStallModal = document.getElementById("editStallModal");
+const MAX_IMAGE_COUNT = 8;
 
-function setPickedPoint(lat, lng) {
-  document.getElementById("latInput").value = Number(lat).toFixed(6);
-  document.getElementById("lngInput").value = Number(lng).toFixed(6);
-  if (pickMarker) map.removeLayer(pickMarker);
-  pickMarker = L.marker([lat, lng]).addTo(map).bindPopup("当前选点").openPopup();
+function businessStatusText(stall) {
+  return Number(stall?.is_open) === 1 ? "营业中" : "休息中";
 }
 
-function toggleModeUI() {
-  const isUpdate = modeSelect.value === "update";
-  targetWrap.classList.toggle("hidden", !isUpdate);
+function parseImageUrls(imageValue) {
+  if (!imageValue) return [];
+  if (Array.isArray(imageValue)) return imageValue.filter(Boolean).map((x) => String(x));
+  const raw = String(imageValue).trim();
+  if (!raw) return [];
+  if (raw.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed.filter(Boolean).map((x) => String(x));
+    } catch {
+      // fallback to single URL
+    }
+  }
+  return [raw];
 }
 
-function fillStallSelect(stalls) {
-  targetStallSelect.innerHTML = "";
-  stalls.forEach((s) => {
+function primaryImageUrl(imageValue) {
+  const urls = parseImageUrls(imageValue);
+  return urls.length > 0 ? urls[0] : "";
+}
+
+function renderImageGallery(imageValue) {
+  const urls = parseImageUrls(imageValue);
+  if (urls.length === 0) return "";
+  return `
+    <div class="image-grid">
+      ${urls.map((u) => `<img src="${escapeHtml(u)}" alt="鎽婁綅鍥剧墖" class="stall-thumb" />`).join("")}
+    </div>
+  `;
+}
+
+async function uploadImages(fileList) {
+  const files = Array.from(fileList || []);
+  if (files.length === 0) return [];
+  if (files.length > MAX_IMAGE_COUNT) {
+    throw new Error(`最多可上传 ${MAX_IMAGE_COUNT} 张图片`);
+  }
+
+  const formData = new FormData();
+  files.forEach((file) => formData.append("images", file));
+  const data = await apiFetch(
+    "/api/uploads/images",
+    {
+      method: "POST",
+      body: formData,
+    },
+    auth.token,
+  );
+  return Array.isArray(data.urls) ? data.urls : [];
+}
+
+function setMsg(text) {
+  merchantMsg.textContent = text;
+}
+
+function setNotificationDotVisible(visible) {
+  if (!notificationDot) return;
+  notificationDot.classList.toggle("hidden", !visible);
+}
+
+async function updateNotificationDot() {
+  const data = await apiFetch("/api/notifications?unread_only=1&page=1&page_size=1", {}, auth.token);
+  const { pagination } = unwrapItems(data);
+  setNotificationDotVisible((pagination?.total || 0) > 0);
+}
+
+function getCurrentStall() {
+  return myStalls.find((s) => s.id === Number(currentManagedStallId)) || null;
+}
+
+function renderManagedSelect() {
+  managedStallSelect.innerHTML = "";
+  if (myStalls.length === 0) {
     const opt = document.createElement("option");
-    opt.value = String(s.id);
-    opt.textContent = `#${s.id} ${s.name}`;
-    targetStallSelect.appendChild(opt);
-  });
-}
-
-function fillReviewFilter(stalls) {
-  reviewStallFilter.innerHTML = '<option value="">全部摊位</option>';
-  stalls.forEach((s) => {
-    const opt = document.createElement("option");
-    opt.value = String(s.id);
-    opt.textContent = `#${s.id} ${s.name}`;
-    reviewStallFilter.appendChild(opt);
-  });
-}
-
-function startEditStall(stallId) {
-  const stall = myStalls.find((s) => s.id === Number(stallId));
-  if (!stall) return;
-
-  modeSelect.value = "update";
-  toggleModeUI();
-  targetStallSelect.value = String(stall.id);
-
-  const form = document.getElementById("merchantForm");
-  form.elements.name.value = stall.name || "";
-  form.elements.category.value = stall.category || "";
-  form.elements.open_time.value = stall.open_time || "";
-  form.elements.image_url.value = stall.image_url || "";
-  form.elements.description.value = stall.description || "";
-  document.getElementById("lngInput").value = Number(stall.lng).toFixed(6);
-  document.getElementById("latInput").value = Number(stall.lat).toFixed(6);
-
-  setPickedPoint(stall.lat, stall.lng);
-  map.setView([stall.lat, stall.lng], 16);
-  merchantMsg.textContent = `已载入 #${stall.id}，可修改后提交审核`;
-}
-
-function renderMyStalls(stalls) {
-  const list = document.getElementById("myStallsList");
-  list.innerHTML = "";
-  if (stalls.length === 0) {
-    list.innerHTML = "<li>暂无已审核摊位</li>";
+    opt.value = "";
+    opt.textContent = "暂无已上传摊位";
+    managedStallSelect.appendChild(opt);
+    managedStallSelect.disabled = true;
+    managedStallHint.textContent = "鏆傛棤鍙鐞嗘憡浣嶏紝璇峰厛鏂板骞堕€氳繃瀹℃牳";
     return;
   }
 
-  stalls.forEach((s) => {
-    const li = document.createElement("li");
-    li.className = "list-item";
-    li.innerHTML = `
-      <div><strong>#${s.id} ${escapeHtml(s.name)}</strong> (${escapeHtml(s.category)})</div>
-      <div>${escapeHtml(s.open_time)}</div>
-      ${s.image_url ? `<img src="${escapeHtml(s.image_url)}" alt="摊位图片" class="stall-thumb" />` : ""}
-    `;
-    const editBtn = document.createElement("button");
-    editBtn.type = "button";
-    editBtn.textContent = "编辑该摊位";
-    editBtn.addEventListener("click", () => startEditStall(s.id));
-    li.appendChild(editBtn);
-    list.appendChild(li);
+  managedStallSelect.disabled = false;
+  myStalls.forEach((s) => {
+    const opt = document.createElement("option");
+    opt.value = String(s.id);
+    opt.textContent = `#${s.id} ${s.name}`;
+    managedStallSelect.appendChild(opt);
   });
+
+  if (!currentManagedStallId || !myStalls.some((s) => s.id === Number(currentManagedStallId))) {
+    currentManagedStallId = myStalls[0].id;
+  }
+  managedStallSelect.value = String(currentManagedStallId);
+  const stall = getCurrentStall();
+  managedStallHint.textContent = stall ? `褰撳墠绠＄悊锛?${stall.id} ${stall.name}` : "璇峰厛閫夋嫨涓€涓凡涓婁紶鎽婁綅";
 }
 
-function renderSubmissions(rows) {
+function renderSelectedStallDetail() {
+  const stall = getCurrentStall();
+  if (!stall) {
+    selectedStallTitle.textContent = "璇烽€夋嫨鎽婁綅";
+    selectedStallDetail.textContent = "鍙充晶鏄剧ず鎽婁綅绠＄悊淇℃伅";
+    return;
+  }
+
+  selectedStallTitle.textContent = `#${stall.id} ${stall.name}`;
+  selectedStallDetail.innerHTML = `
+    <div><strong>钀ヤ笟鐘舵€侊細</strong>${escapeHtml(businessStatusText(stall))}</div>
+    <div><strong>缁忚惀绫诲埆锛?/strong>${escapeHtml(stall.category)}</div>
+    <div><strong>钀ヤ笟鏃堕棿锛?/strong>${escapeHtml(stall.open_time)}</div>
+    <div><strong>浣嶇疆锛?/strong>${stall.lat}, ${stall.lng}</div>
+    ${stall.live_updated_at ? `<div><strong>鏈€杩戞洿鏂帮細</strong>${escapeHtml(stall.live_updated_at)}</div>` : ""}
+    <div><strong>绠€浠嬶細</strong>${escapeHtml(stall.description || "鏆傛棤")}</div>
+    ${renderImageGallery(stall.image_url)}
+  `;
+}
+
+function renderMySubmissions(rows) {
   const list = document.getElementById("mySubmissionsList");
   list.innerHTML = "";
   if (rows.length === 0) {
-    list.innerHTML = "<li>暂无提交记录</li>";
+    list.innerHTML = "<li>鏆傛棤鎻愪氦璁板綍</li>";
     return;
   }
-
   rows.forEach((s) => {
     const li = document.createElement("li");
     li.className = "list-item";
     li.innerHTML = `
       <div><strong>#${s.id}</strong> ${escapeHtml(s.name)} (${escapeHtml(s.action)})</div>
-      <div>状态: ${escapeHtml(s.status)}</div>
-      ${s.reject_reason ? `<div class="hint">驳回原因: ${escapeHtml(s.reject_reason)}</div>` : ""}
+      <div class="hint">绫诲埆: ${escapeHtml(s.category || "")} | 钀ヤ笟鏃堕棿: ${escapeHtml(s.open_time || "")}</div>
+      <div class="hint">浣嶇疆: ${s.lat}, ${s.lng}</div>
+      <div class="hint">绠€浠? ${escapeHtml(s.description || "鏆傛棤")}</div>
+      ${renderImageGallery(s.image_url)}
+      <div>鐘舵€? ${escapeHtml(s.status)}</div>
+      ${s.reject_reason ? `<div class="hint">椹冲洖鍘熷洜: ${escapeHtml(s.reject_reason)}</div>` : ""}
     `;
     list.appendChild(li);
   });
 }
 
-function renderMerchantReviews(rows) {
+function renderReviews(rows) {
   const list = document.getElementById("merchantReviewsList");
   list.innerHTML = "";
   if (rows.length === 0) {
-    list.innerHTML = "<li>暂无评价</li>";
+    list.innerHTML = "<li>褰撳墠鎽婁綅鏆傛棤璇勪环</li>";
     return;
   }
 
@@ -132,13 +179,13 @@ function renderMerchantReviews(rows) {
     const li = document.createElement("li");
     li.className = "list-item";
     li.innerHTML = `
-      <div><strong>${escapeHtml(r.stall_name)}</strong> | ${escapeHtml(r.user_name)} | ${stars(r.rating)} (${r.rating})</div>
+      <div><strong>${escapeHtml(r.user_name)}</strong> ${stars(r.rating)} (${r.rating})</div>
       <div>${escapeHtml(r.content)}</div>
-      <div class="hint">状态: ${escapeHtml(r.status)}</div>
-      ${r.merchant_reply ? `<div class="reply-box">已回复：${escapeHtml(r.merchant_reply)}</div>` : ""}
+      <div class="hint">鐘舵€? ${escapeHtml(r.status)} | ${escapeHtml(r.created_at || "")}</div>
+      ${r.merchant_reply ? `<div class="reply-box">宸插洖澶嶏細${escapeHtml(r.merchant_reply)}</div>` : ""}
       <div class="inline-form">
-        <input type="text" id="replyInput_${r.id}" placeholder="输入回复" />
-        <button type="button" data-review-id="${r.id}">保存回复</button>
+        <input type="text" id="replyInput_${r.id}" placeholder="杈撳叆鍥炲" />
+        <button type="button" data-review-id="${r.id}">淇濆瓨鍥炲</button>
       </div>
     `;
     list.appendChild(li);
@@ -148,9 +195,9 @@ function renderMerchantReviews(rows) {
     btn.addEventListener("click", async () => {
       const reviewId = Number(btn.getAttribute("data-review-id"));
       const input = document.getElementById(`replyInput_${reviewId}`);
-      const reply = input.value.trim();
+      const reply = String(input.value || "").trim();
       if (!reply) {
-        merchantMsg.textContent = "回复内容不能为空";
+        setMsg("鍥炲鍐呭涓嶈兘涓虹┖");
         return;
       }
       try {
@@ -163,21 +210,37 @@ function renderMerchantReviews(rows) {
           },
           auth.token,
         );
-        merchantMsg.textContent = result.message;
-        await loadMerchantReviews();
+        setMsg(result.message);
+        await loadReviewsForManagedStall();
+        await updateNotificationDot();
       } catch (error) {
-        merchantMsg.textContent = error.message;
+        setMsg(error.message);
       }
     });
   });
 }
 
+async function loadMyStalls() {
+  const data = await apiFetch("/api/merchant/stalls?page=1&page_size=200", {}, auth.token);
+  const { items } = unwrapItems(data);
+  myStalls = items;
+  renderManagedSelect();
+  renderSelectedStallDetail();
+}
+
+async function loadMySubmissions() {
+  const data = await apiFetch("/api/merchant/submissions?page=1&page_size=20", {}, auth.token);
+  const { items } = unwrapItems(data);
+  renderMySubmissions(items);
+}
+
 async function loadMapStalls() {
-  const stalls = await apiFetch("/api/stalls");
+  const data = await apiFetch("/api/stalls?page=1&page_size=500");
+  const { items } = unwrapItems(data);
   allLayer.clearLayers();
   ownLayer.clearLayers();
 
-  stalls.forEach((s) => {
+  items.forEach((s) => {
     L.circleMarker([s.lat, s.lng], {
       radius: 5,
       color: "#94a3b8",
@@ -185,188 +248,200 @@ async function loadMapStalls() {
       fillOpacity: 0.8,
       weight: 1,
     })
-      .bindPopup(`#${s.id} ${escapeHtml(s.name)}`)
+      .bindPopup(`#${s.id} ${escapeHtml(s.name)}<br/>鐘舵€侊細${escapeHtml(businessStatusText(s))}`)
       .addTo(allLayer);
   });
 
   myStalls.forEach((s) => {
-    const ownMarker = L.circleMarker([s.lat, s.lng], {
+    L.circleMarker([s.lat, s.lng], {
       radius: 7,
       color: "#b91c1c",
       fillColor: "#f97316",
       fillOpacity: 0.9,
       weight: 1,
     })
-      .bindPopup(
-        `
-          我的摊位 #${s.id} ${escapeHtml(s.name)}<br/>
-          ${s.image_url ? `<img src="${escapeHtml(s.image_url)}" alt="摊位图片" class="popup-thumb" /><br/>` : ""}
-          <button type="button" onclick="window.merchantEditStall(${s.id})">编辑该摊位</button>
-        `,
-      )
-      .addTo(ownLayer);
-    ownMarker.on("click", () => startEditStall(s.id));
+      .bindPopup(`#${s.id} ${escapeHtml(s.name)}<br/>鐘舵€侊細${escapeHtml(businessStatusText(s))}`)
+      .addTo(ownLayer)
+      .on("click", async () => {
+        currentManagedStallId = s.id;
+        renderManagedSelect();
+        renderSelectedStallDetail();
+        map.setView([s.lat, s.lng], 16);
+        await loadReviewsForManagedStall();
+      });
   });
 }
 
-async function loadHeatmap() {
-  const points = await apiFetch("/api/heatmap?mode=density");
-  const latlngs = points.map((p) => [p.lat, p.lng, p.weight]);
-  if (heatLayer) map.removeLayer(heatLayer);
-  heatLayer = L.heatLayer(latlngs, {
-    radius: 22,
-    blur: 16,
-    maxZoom: 18,
-    max: 6.0,
-    minOpacity: 0.35,
-    gradient: {
-      0.12: "#1d4ed8",
-      0.3: "#06b6d4",
-      0.5: "#22c55e",
-      0.7: "#facc15",
-      0.88: "#f97316",
-      1.0: "#dc2626",
-    },
-  });
-  if (heatVisible) heatLayer.addTo(map);
-}
-
-function updateMarkerVisibility() {
-  const hideMarkers = heatVisible && map.getZoom() < HIDE_MARKERS_ZOOM;
-  [allLayer, ownLayer].forEach((layer) => {
-    if (hideMarkers && map.hasLayer(layer)) map.removeLayer(layer);
-    if (!hideMarkers && !map.hasLayer(layer)) layer.addTo(map);
-  });
-}
-
-async function loadMyStalls() {
-  myStalls = await apiFetch("/api/merchant/stalls", {}, auth.token);
-  fillStallSelect(myStalls);
-  fillReviewFilter(myStalls);
-  renderMyStalls(myStalls);
-}
-
-async function loadMySubmissions() {
-  const rows = await apiFetch("/api/merchant/submissions", {}, auth.token);
-  renderSubmissions(rows);
-}
-
-async function loadMerchantReviews() {
-  const stallId = reviewStallFilter.value;
-  const qs = stallId ? `?stall_id=${encodeURIComponent(stallId)}` : "";
-  const rows = await apiFetch(`/api/merchant/reviews${qs}`, {}, auth.token);
-  renderMerchantReviews(rows);
-}
-
-modeSelect.addEventListener("change", toggleModeUI);
-
-targetStallSelect.addEventListener("change", () => {
-  const id = Number(targetStallSelect.value);
-  const stall = myStalls.find((s) => s.id === id);
-  if (!stall) return;
-  setPickedPoint(stall.lat, stall.lng);
-  map.setView([stall.lat, stall.lng], 16);
-});
-
-map.on("click", (e) => {
-  setPickedPoint(e.latlng.lat, e.latlng.lng);
-});
-
-document.getElementById("searchBtn").addEventListener("click", async () => {
-  const keyword = document.getElementById("searchInput").value.trim();
-  if (!keyword) {
-    merchantMsg.textContent = "请输入搜索关键词";
+async function loadReviewsForManagedStall() {
+  const stall = getCurrentStall();
+  if (!stall) {
+    renderReviews([]);
     return;
   }
-  try {
-    const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(keyword)}`;
-    const res = await fetch(url, { headers: { Accept: "application/json" } });
-    const data = await res.json();
-    if (!Array.isArray(data) || data.length === 0) {
-      merchantMsg.textContent = "未找到该地点，请尝试更具体关键词";
-      return;
-    }
-    const lat = Number(data[0].lat);
-    const lon = Number(data[0].lon);
-    map.setView([lat, lon], 16);
-    setPickedPoint(lat, lon);
-    merchantMsg.textContent = "已定位，请确认或点击地图微调位置";
-  } catch (error) {
-    merchantMsg.textContent = `地图搜索失败: ${error.message}`;
+  const data = await apiFetch(`/api/merchant/reviews?stall_id=${stall.id}&page=1&page_size=20`, {}, auth.token);
+  const { items } = unwrapItems(data);
+  renderReviews(items);
+}
+
+function openEditModal() {
+  const stall = getCurrentStall();
+  if (!stall) {
+    setMsg("璇峰厛閫夋嫨鎽婁綅");
+    return;
   }
-});
+  const form = document.getElementById("editStallForm");
+  form.elements.name.value = stall.name || "";
+  form.elements.category.value = stall.category || "";
+  form.elements.open_time.value = stall.open_time || "";
+  form.elements.lng.value = stall.lng;
+  form.elements.lat.value = stall.lat;
+  form.elements.description.value = stall.description || "";
+  if (form.elements.image_files) form.elements.image_files.value = "";
+  editStallModal.classList.remove("hidden");
+}
 
-document.getElementById("merchantForm").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const form = new FormData(e.target);
-  const mode = String(form.get("mode"));
+function closeEditModal() {
+  editStallModal.classList.add("hidden");
+}
 
-  const payload = {
-    name: String(form.get("name") || "").trim(),
-    category: String(form.get("category") || "").trim(),
-    open_time: String(form.get("open_time") || "").trim(),
-    image_url: String(form.get("image_url") || "").trim(),
-    lng: Number(form.get("lng")),
-    lat: Number(form.get("lat")),
-    description: String(form.get("description") || "").trim(),
-  };
-
-  try {
-    let result;
-    if (mode === "update") {
-      const targetId = Number(form.get("target_stall_id"));
-      if (!targetId) throw new Error("请选择要修改的摊位");
-      result = await apiFetch(
-        `/api/merchant/stalls/${targetId}/update`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        },
-        auth.token,
-      );
-    } else {
-      result = await apiFetch(
-        "/api/merchant/stalls",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        },
-        auth.token,
-      );
-    }
-
-    merchantMsg.textContent = result.message;
-    await refreshAll();
-  } catch (error) {
-    merchantMsg.textContent = error.message;
+async function openStallNow() {
+  const stall = getCurrentStall();
+  if (!stall) {
+    setMsg("璇峰厛閫夋嫨鎽婁綅");
+    return;
   }
-});
 
-document.getElementById("loadMerchantReviewsBtn").addEventListener("click", loadMerchantReviews);
-reviewStallFilter.addEventListener("change", loadMerchantReviews);
-document.getElementById("refreshBtn").addEventListener("click", refreshAll);
-document.getElementById("toggleHeatBtn").addEventListener("click", () => {
-  heatVisible = !heatVisible;
-  if (!heatLayer) return;
-  if (heatVisible) heatLayer.addTo(map);
-  else map.removeLayer(heatLayer);
-  updateMarkerVisibility();
-});
-map.on("zoomend", updateMarkerVisibility);
-window.merchantEditStall = (stallId) => startEditStall(stallId);
+  let lng = Number(stall.lng);
+  let lat = Number(stall.lat);
+  if (navigator.geolocation) {
+    try {
+      const pos = await new Promise((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(resolve, reject, {
+          enableHighAccuracy: true,
+          timeout: 6000,
+          maximumAge: 0,
+        });
+      });
+      lat = Number(pos.coords.latitude);
+      lng = Number(pos.coords.longitude);
+    } catch {
+      // fallback to stall coordinates
+    }
+  }
+
+  const result = await apiFetch(
+    `/api/merchant/stalls/${stall.id}/open`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ lng, lat }),
+    },
+    auth.token,
+  );
+  setMsg(result.message);
+  await refreshAll();
+}
+
+async function closeStallNow() {
+  const stall = getCurrentStall();
+  if (!stall) {
+    setMsg("璇峰厛閫夋嫨鎽婁綅");
+    return;
+  }
+  const result = await apiFetch(`/api/merchant/stalls/${stall.id}/close`, { method: "POST" }, auth.token);
+  setMsg(result.message);
+  await refreshAll();
+}
 
 async function refreshAll() {
   await loadMyStalls();
   await loadMapStalls();
-  await loadHeatmap();
   await loadMySubmissions();
-  await loadMerchantReviews();
-  updateMarkerVisibility();
+  await loadReviewsForManagedStall();
+  await updateNotificationDot();
 }
 
+managedStallSelect.addEventListener("change", () => {
+  const id = Number(managedStallSelect.value);
+  currentManagedStallId = id || null;
+  renderSelectedStallDetail();
+  const stall = getCurrentStall();
+  managedStallHint.textContent = stall ? `褰撳墠绠＄悊锛?${stall.id} ${stall.name}` : "璇峰厛閫夋嫨涓€涓凡涓婁紶鎽婁綅";
+});
+
+document.getElementById("switchManagedStallBtn").addEventListener("click", async () => {
+  await loadReviewsForManagedStall();
+  const stall = getCurrentStall();
+  if (stall) {
+    map.setView([stall.lat, stall.lng], 16);
+    setMsg(`宸茶繘鍏?#${stall.id} 绠＄悊`);
+  }
+});
+
+document.getElementById("loadMerchantReviewsBtn").addEventListener("click", () => {
+  loadReviewsForManagedStall().catch((error) => setMsg(error.message));
+});
+document.getElementById("refreshBtn").addEventListener("click", () => {
+  refreshAll().catch((error) => setMsg(error.message));
+});
+document.getElementById("editStallBtn").addEventListener("click", openEditModal);
+document.getElementById("openStallBtn").addEventListener("click", () => {
+  openStallNow().catch((error) => setMsg(error.message));
+});
+document.getElementById("closeStallBtn").addEventListener("click", () => {
+  closeStallNow().catch((error) => setMsg(error.message));
+});
+document.getElementById("closeEditModalBtn").addEventListener("click", closeEditModal);
+editStallModal.addEventListener("click", (e) => {
+  if (e.target === editStallModal) closeEditModal();
+});
+
+document.getElementById("editStallForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const stall = getCurrentStall();
+  if (!stall) {
+    setMsg("璇峰厛閫夋嫨鎽婁綅");
+    return;
+  }
+
+  const form = new FormData(e.target);
+  try {
+    const imageFiles = Array.from(document.getElementById("editImageFilesInput")?.files || []);
+    const uploadedUrls = imageFiles.length > 0
+      ? await uploadImages(imageFiles)
+      : parseImageUrls(stall.image_url);
+    const payload = {
+      name: String(form.get("name") || "").trim(),
+      category: String(form.get("category") || "").trim(),
+      open_time: String(form.get("open_time") || "").trim(),
+      image_url: uploadedUrls.length > 0 ? JSON.stringify(uploadedUrls) : "",
+      lng: Number(form.get("lng")),
+      lat: Number(form.get("lat")),
+      description: String(form.get("description") || "").trim(),
+    };
+
+    const result = await apiFetch(
+      `/api/merchant/stalls/${stall.id}/update`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      },
+      auth.token,
+    );
+    setMsg(result.message);
+    closeEditModal();
+    await refreshAll();
+  } catch (error) {
+    setMsg(error.message);
+  }
+});
+
 (async function init() {
-  toggleModeUI();
   await refreshAll();
+  setInterval(() => {
+    updateNotificationDot().catch(() => {});
+  }, 30000);
 })();
+
+

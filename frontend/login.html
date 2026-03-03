@@ -9,10 +9,19 @@
   <body>
     <main class="container form-wrap">
       <h1 id="loginTitle">登录</h1>
+      <div class="inline-form">
+        <button id="showLoginBtn" type="button">登录</button>
+        <button id="showRegisterBtn" type="button">注册</button>
+      </div>
       <form id="loginForm" class="card form-grid">
         <label>用户名<input name="username" required /></label>
         <label>密码<input name="password" type="password" required /></label>
         <button type="submit">登录</button>
+      </form>
+      <form id="registerForm" class="card form-grid hidden">
+        <label>用户名<input name="username" minlength="3" maxlength="30" required /></label>
+        <label>密码<input name="password" type="password" minlength="6" maxlength="64" required /></label>
+        <button type="submit">注册</button>
       </form>
       <p id="loginMsg" class="hint"></p>
       <a class="back-link" href="./index.html">返回首页</a>

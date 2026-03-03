@@ -11,6 +11,7 @@
       <h1>摊位审核</h1>
       <div>
         <a class="nav-btn" href="./admin.html">管理员首页</a>
+        <a class="nav-btn" href="./admin-stalls.html">摊位管理</a>
         <a class="nav-btn" href="./admin-reviews.html">评价审核</a>
         <a class="nav-btn" href="./admin-users.html">用户管理</a>
         <a class="nav-btn" href="./admin-logs.html">审核记录</a>
@@ -28,9 +29,21 @@
             <option value="rejected">已驳回</option>
             <option value="">全部</option>
           </select>
+          <input id="submissionSearchInput" type="text" placeholder="关键词：摊位名/商户/类别" />
+          <button id="submissionSearchBtn" type="button">搜索</button>
           <button id="loadPendingBtn" type="button">刷新提交记录</button>
         </div>
+        <div class="inline-form">
+          <button id="batchApproveBtn" type="button">批量通过</button>
+          <button id="batchRejectBtn" type="button">批量驳回</button>
+          <span id="submissionBatchHint" class="hint">未选择记录</span>
+        </div>
         <ul id="pendingList" class="list"></ul>
+        <div class="inline-form">
+          <button id="submissionPrevPageBtn" type="button">上一页</button>
+          <span id="submissionPageInfo" class="hint"></span>
+          <button id="submissionNextPageBtn" type="button">下一页</button>
+        </div>
       </section>
       <p id="adminMsg" class="hint"></p>
     </main>

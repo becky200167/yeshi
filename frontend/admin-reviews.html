@@ -12,6 +12,7 @@
       <div>
         <a class="nav-btn" href="./admin.html">管理员首页</a>
         <a class="nav-btn" href="./admin-submissions.html">摊位审核</a>
+        <a class="nav-btn" href="./admin-stalls.html">摊位管理</a>
         <a class="nav-btn" href="./admin-users.html">用户管理</a>
         <a class="nav-btn" href="./admin-logs.html">审核记录</a>
         <button id="logoutBtn">退出登录</button>
@@ -28,9 +29,21 @@
             <option value="rejected">已驳回</option>
             <option value="">全部</option>
           </select>
+          <input id="reviewSearchInput" type="text" placeholder="关键词：内容/用户/摊位" />
+          <button id="reviewSearchBtn" type="button">搜索</button>
           <button id="loadReviewsBtn" type="button">刷新评价</button>
         </div>
+        <div class="inline-form">
+          <button id="batchApproveReviewsBtn" type="button">批量通过</button>
+          <button id="batchRejectReviewsBtn" type="button">批量驳回</button>
+          <span id="reviewBatchHint" class="hint">未选择记录</span>
+        </div>
         <ul id="adminReviewsList" class="list"></ul>
+        <div class="inline-form">
+          <button id="reviewPrevPageBtn" type="button">上一页</button>
+          <span id="reviewPageInfo" class="hint"></span>
+          <button id="reviewNextPageBtn" type="button">下一页</button>
+        </div>
       </section>
       <p id="adminMsg" class="hint"></p>
     </main>

@@ -1,0 +1,42 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>消息中心</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <h1 id="notificationsTitle">消息中心</h1>
+      <div>
+        <a id="backBtn" class="nav-btn" href="./index.html">返回</a>
+        <button id="logoutBtn">退出登录</button>
+      </div>
+    </header>
+
+    <main class="page stack-gap">
+      <section class="card">
+        <h2>通知列表</h2>
+        <div class="inline-form">
+          <select id="unreadFilter">
+            <option value="">全部消息</option>
+            <option value="1">仅未读</option>
+          </select>
+          <button id="loadNotificationsBtn" type="button">刷新</button>
+          <button id="readAllNotificationsBtn" type="button">全部已读</button>
+        </div>
+        <ul id="notificationsList" class="list"></ul>
+        <div class="inline-form">
+          <button id="notificationsPrevBtn" type="button">上一页</button>
+          <span id="notificationsPageInfo" class="hint"></span>
+          <button id="notificationsNextBtn" type="button">下一页</button>
+        </div>
+      </section>
+      <p id="notificationsMsg" class="hint"></p>
+    </main>
+
+    <script src="./auth.js"></script>
+    <script src="./notifications.js"></script>
+  </body>
+</html>

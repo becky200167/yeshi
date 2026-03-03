@@ -1,0 +1,55 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>鏂板鎽婁綅</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <h1>鏂板鎽婁綅</h1>
+      <div>
+        <a class="nav-btn" href="./merchant.html">杩斿洖鍟嗘埛绔?/a>
+        <a class="nav-btn notif-btn" href="./notifications.html?role=merchant"><span>娑堟伅涓績</span><span id="notificationDot" class="notif-dot hidden"></span></a>
+        <button id="logoutBtn" type="button">閫€鍑虹櫥褰?/button>
+      </div>
+    </header>
+
+    <main class="page stack-gap">
+      <section class="card">
+        <h2>鍦板浘閫夌偣</h2>
+        <div class="inline-form">
+          <input id="searchInput" type="text" placeholder="鎼滅储浣嶇疆锛屼緥濡傦細鎵竼澶滃競" />
+          <button id="searchBtn" type="button">鍦板浘鎼滅储</button>
+          <span class="hint">鍙偣鍑诲湴鍥捐嚜鍔ㄥ～鍏呯粡绾害</span>
+        </div>
+        <div id="createMap" class="map-box map-mid"></div>
+      </section>
+
+      <section class="card">
+        <h2>鎻愪氦鏂板鐢宠</h2>
+        <form id="createStallForm" class="form-grid">
+          <label>鎽婁綅鍚?input name="name" required /></label>
+          <label>缁忚惀绫诲埆<input name="category" required /></label>
+          <label>钀ヤ笟鏃堕棿<input name="open_time" placeholder="18:00-23:00" required /></label>
+          <label>摊位图片（可多选）
+            <input id="imageFilesInput" name="image_files" type="file" accept="image/*" multiple />
+          </label>
+          <label>缁忓害<input id="lngInput" name="lng" type="number" step="0.000001" required /></label>
+          <label>绾害<input id="latInput" name="lat" type="number" step="0.000001" required /></label>
+          <label>绠€浠?textarea name="description" rows="3"></textarea></label>
+          <button type="submit">鎻愪氦瀹℃牳</button>
+        </form>
+        <p id="createMsg" class="hint"></p>
+      </section>
+    </main>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="./auth.js"></script>
+    <script src="./merchant-create.js"></script>
+  </body>
+</html>
+
+

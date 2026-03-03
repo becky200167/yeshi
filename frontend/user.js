@@ -12,7 +12,12 @@ let heatLayer = null;
 let heatVisible = false;
 let stalls = [];
 let selectedStallId = null;
+let discoverPage = 1;
+let discoverTotalPages = 1;
+const markerById = new Map();
 const HIDE_MARKERS_ZOOM = 14;
+const DISCOVER_PAGE_SIZE = 20;
+const MAP_FETCH_PAGE_SIZE = 100;
 
 const reviewList = document.getElementById("reviewList");
 const reviewMsg = document.getElementById("reviewMsg");
@@ -22,6 +27,54 @@ const selectedStallDetail = document.getElementById("selectedStallDetail");
 const reviewModal = document.getElementById("reviewModal");
 const reviewModalTitle = document.getElementById("reviewModalTitle");
 const reviewStallIdInput = document.getElementById("reviewStallId");
+const discoverPageInfo = document.getElementById("discoverPageInfo");
+const notificationDot = document.getElementById("notificationDot");
+
+function businessStatusText(stall) {
+  return Number(stall?.is_open) === 1 ? "营业中" : "休息中";
+}
+
+function parseImageUrls(imageValue) {
+  if (!imageValue) return [];
+  if (Array.isArray(imageValue)) return imageValue.filter(Boolean).map((x) => String(x));
+  const raw = String(imageValue).trim();
+  if (!raw) return [];
+  if (raw.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed.filter(Boolean).map((x) => String(x));
+    } catch {
+      // fallback to single URL
+    }
+  }
+  return [raw];
+}
+
+function primaryImageUrl(imageValue) {
+  const urls = parseImageUrls(imageValue);
+  return urls.length > 0 ? urls[0] : "";
+}
+
+function renderImageGallery(imageValue, cls = "stall-thumb") {
+  const urls = parseImageUrls(imageValue);
+  if (urls.length === 0) return "";
+  return `
+    <div class="image-grid">
+      ${urls.map((u) => `<img src="${escapeHtml(u)}" alt="摊位图片" class="${cls}" />`).join("")}
+    </div>
+  `;
+}
+
+function setNotificationDotVisible(visible) {
+  if (!notificationDot) return;
+  notificationDot.classList.toggle("hidden", !visible);
+}
+
+async function updateNotificationDot() {
+  const data = await apiFetch("/api/notifications?unread_only=1&page=1&page_size=1", {}, auth.token);
+  const { pagination } = unwrapItems(data);
+  setNotificationDotVisible((pagination?.total || 0) > 0);
+}
 
 function getStallById(stallId) {
   return stalls.find((s) => s.id === Number(stallId));
@@ -35,18 +88,34 @@ function setSelectedStall(stallId) {
   selectedStallDetail.innerHTML = `
     <div><strong>类别：</strong>${escapeHtml(stall.category)}</div>
     <div><strong>营业时间：</strong>${escapeHtml(stall.open_time)}</div>
+    <div><strong>营业状态：</strong>${escapeHtml(businessStatusText(stall))}</div>
     <div><strong>商户：</strong>${escapeHtml(stall.merchant_name || "未知")}</div>
+    <div><strong>评分：</strong>${Number(stall.avg_rating || 0).toFixed(1)} (${stall.review_count || 0} 条)</div>
+    ${stall.distance_km !== null && stall.distance_km !== undefined ? `<div><strong>距离：</strong>${stall.distance_km} km</div>` : ""}
     <div><strong>简介：</strong>${escapeHtml(stall.description || "暂无")}</div>
-    ${stall.image_url ? `<img src="${escapeHtml(stall.image_url)}" alt="摊位图片" class="stall-thumb" />` : ""}
+    ${renderImageGallery(stall.image_url, "stall-thumb")}
   `;
+  highlightSelectedDiscoverItem();
+}
+
+function highlightSelectedDiscoverItem() {
+  const list = document.getElementById("discoverList");
+  if (!list) return;
+  list.querySelectorAll(".list-item").forEach((el) => {
+    const itemId = Number(el.getAttribute("data-stall-id"));
+    el.classList.toggle("active", itemId === Number(selectedStallId));
+  });
 }
 
 function popupHtml(stall) {
   return `
     <div>
       <strong>${escapeHtml(stall.name)}</strong><br/>
-      ${stall.image_url ? `<img src="${escapeHtml(stall.image_url)}" alt="摊位图片" class="popup-thumb" /><br/>` : ""}
+      ${renderImageGallery(stall.image_url, "popup-thumb")}
       类别: ${escapeHtml(stall.category)}<br/>
+      评分: ${Number(stall.avg_rating || 0).toFixed(1)} (${stall.review_count || 0} 条)<br/>
+      营业状态: ${escapeHtml(businessStatusText(stall))}<br/>
+      ${stall.distance_km !== null && stall.distance_km !== undefined ? `距离: ${stall.distance_km} km<br/>` : ""}
       营业时间: ${escapeHtml(stall.open_time)}<br/>
       商户: ${escapeHtml(stall.merchant_name || "未知")}<br/>
       简介: ${escapeHtml(stall.description || "")}
@@ -55,6 +124,53 @@ function popupHtml(stall) {
       </div>
     </div>
   `;
+}
+
+function renderDiscoverList(items) {
+  const list = document.getElementById("discoverList");
+  list.innerHTML = "";
+  if (items.length === 0) {
+    list.innerHTML = "<li>暂无符合条件的摊位</li>";
+    return;
+  }
+
+  items.forEach((s) => {
+    const li = document.createElement("li");
+    li.className = "list-item";
+    li.setAttribute("data-stall-id", String(s.id));
+    li.innerHTML = `
+      <div><strong>#${s.id} ${escapeHtml(s.name)}</strong> (${escapeHtml(s.category)})</div>
+      <div>营业状态: ${escapeHtml(businessStatusText(s))}</div>
+      <div>评分: ${Number(s.avg_rating || 0).toFixed(1)} (${s.review_count || 0} 条)</div>
+      ${s.distance_km !== null && s.distance_km !== undefined ? `<div>距离: ${s.distance_km} km</div>` : ""}
+      <div class="hint">${escapeHtml(s.open_time)}</div>
+    `;
+    li.addEventListener("click", async () => {
+      const marker = markerById.get(Number(s.id));
+      if (marker) {
+        map.setView([s.lat, s.lng], 16);
+        marker.openPopup();
+      }
+      setSelectedStall(s.id);
+      await loadReviews(s.id);
+    });
+    list.appendChild(li);
+  });
+  highlightSelectedDiscoverItem();
+}
+
+function renderCategoryFilter(items) {
+  const select = document.getElementById("discoverCategoryFilter");
+  const previous = select.value;
+  const categories = Array.from(new Set(items.map((x) => x.category))).sort((a, b) => String(a).localeCompare(String(b)));
+  select.innerHTML = '<option value="">全部类别</option>';
+  categories.forEach((c) => {
+    const opt = document.createElement("option");
+    opt.value = c;
+    opt.textContent = c;
+    select.appendChild(opt);
+  });
+  if (categories.includes(previous)) select.value = previous;
 }
 
 function renderReviews(items) {
@@ -103,10 +219,7 @@ function renderReviews(items) {
     const renderedReplies = topReplies
       .map((rp) => {
         const children = childrenMap.get(Number(rp.id)) || [];
-        return (
-          renderReplyLine(rp, 0) +
-          children.map((c) => renderReplyLine(c, 16)).join("")
-        );
+        return renderReplyLine(rp, 0) + children.map((c) => renderReplyLine(c, 16)).join("");
       })
       .join("");
 
@@ -128,7 +241,6 @@ function renderReviews(items) {
       const reviewId = Number(btn.getAttribute("data-reply-review"));
       const parentReplyRaw = btn.getAttribute("data-parent-reply");
       const parentReplyId = parentReplyRaw ? Number(parentReplyRaw) : null;
-      const placeholder = parentReplyId ? "回复这条评论..." : "回复主评论...";
       const content = window.prompt("请输入回复内容：", "");
       if (content === null) return;
       const trimmed = content.trim();
@@ -149,7 +261,7 @@ function renderReviews(items) {
           },
           auth.token,
         );
-        reviewMsg.textContent = result.message || placeholder;
+        reviewMsg.textContent = result.message || "回复已提交";
         await loadReviews();
       } catch (error) {
         reviewMsg.textContent = error.message;
@@ -158,10 +270,69 @@ function renderReviews(items) {
   });
 }
 
-async function loadStalls() {
-  stalls = await apiFetch("/api/stalls");
-  markersLayer.clearLayers();
+function buildDiscoverParams(options = {}) {
+  const includePage = options.includePage !== false;
+  const page = options.page ?? discoverPage;
+  const pageSize = options.pageSize ?? DISCOVER_PAGE_SIZE;
+  const params = new URLSearchParams();
+  if (includePage) {
+    params.set("page", String(page));
+    params.set("page_size", String(pageSize));
+  }
+  const q = document.getElementById("discoverSearchInput").value.trim();
+  const category = document.getElementById("discoverCategoryFilter").value;
+  const minRating = document.getElementById("discoverMinRatingFilter").value;
+  const sort = document.getElementById("discoverSortSelect").value;
+  const maxDistance = document.getElementById("discoverDistanceInput").value;
 
+  if (q) params.set("q", q);
+  if (category) params.set("category", category);
+  if (minRating) params.set("min_rating", minRating);
+  if (sort) params.set("sort", sort);
+  if (maxDistance) {
+    const center = map.getCenter();
+    params.set("max_distance_km", maxDistance);
+    params.set("center_lat", String(center.lat));
+    params.set("center_lng", String(center.lng));
+  }
+  if (sort === "distance_asc" && !maxDistance) {
+    const center = map.getCenter();
+    params.set("center_lat", String(center.lat));
+    params.set("center_lng", String(center.lng));
+  }
+  return params;
+}
+
+async function fetchAllFilteredStalls() {
+  const all = [];
+  let page = 1;
+  let totalPages = 1;
+  const baseParams = buildDiscoverParams({ includePage: false });
+
+  do {
+    const params = new URLSearchParams(baseParams.toString());
+    params.set("page", String(page));
+    params.set("page_size", String(MAP_FETCH_PAGE_SIZE));
+    const data = await apiFetch(`/api/stalls?${params.toString()}`);
+    const { items, pagination } = unwrapItems(data);
+    all.push(...items);
+    totalPages = pagination?.total_pages || 1;
+    page += 1;
+  } while (page <= totalPages);
+
+  return all;
+}
+
+async function loadStalls() {
+  stalls = await fetchAllFilteredStalls();
+  discoverTotalPages = Math.max(1, Math.ceil(stalls.length / DISCOVER_PAGE_SIZE));
+  if (discoverPage > discoverTotalPages) discoverPage = discoverTotalPages;
+  const start = (discoverPage - 1) * DISCOVER_PAGE_SIZE;
+  const pageItems = stalls.slice(start, start + DISCOVER_PAGE_SIZE);
+  discoverPageInfo.textContent = `第 ${discoverPage} / ${discoverTotalPages} 页，共 ${stalls.length} 条`;
+
+  markersLayer.clearLayers();
+  markerById.clear();
   stalls.forEach((stall) => {
     const marker = L.marker([stall.lat, stall.lng]).bindPopup(popupHtml(stall));
     marker.on("click", async () => {
@@ -169,7 +340,11 @@ async function loadStalls() {
       await loadReviews(stall.id);
     });
     marker.addTo(markersLayer);
+    markerById.set(Number(stall.id), marker);
   });
+
+  renderCategoryFilter(stalls);
+  renderDiscoverList(pageItems);
 }
 
 async function loadHeatmap() {
@@ -212,8 +387,9 @@ async function loadReviews(stallId = selectedStallId) {
     return;
   }
   setSelectedStall(stallId);
-  const rows = await apiFetch(`/api/reviews?stall_id=${encodeURIComponent(stallId)}`);
-  renderReviews(rows);
+  const data = await apiFetch(`/api/reviews?stall_id=${encodeURIComponent(stallId)}&page=1&page_size=100`);
+  const { items } = unwrapItems(data);
+  renderReviews(items);
 }
 
 function openReviewModal(stallId) {
@@ -260,6 +436,7 @@ document.getElementById("reviewForm").addEventListener("submit", async (e) => {
     e.target.reset();
     closeReviewModal();
     await loadReviews(stallId);
+    await updateNotificationDot();
   } catch (error) {
     reviewMsg.textContent = error.message;
   }
@@ -282,18 +459,50 @@ document.getElementById("toggleHeatBtn").addEventListener("click", () => {
   updateMarkerVisibility();
 });
 
-map.on("zoomend", updateMarkerVisibility);
-
 document.getElementById("refreshBtn").addEventListener("click", async () => {
   await loadStalls();
   await loadHeatmap();
   await loadReviews();
+  await updateNotificationDot();
   updateMarkerVisibility();
 });
+
+document.getElementById("applyDiscoverBtn").addEventListener("click", async () => {
+  discoverPage = 1;
+  await loadStalls();
+  if (stalls.length > 0) {
+    await loadReviews(stalls[0].id);
+  }
+});
+document.getElementById("clearDiscoverBtn").addEventListener("click", async () => {
+  document.getElementById("discoverSearchInput").value = "";
+  document.getElementById("discoverCategoryFilter").value = "";
+  document.getElementById("discoverMinRatingFilter").value = "";
+  document.getElementById("discoverSortSelect").value = "id_asc";
+  document.getElementById("discoverDistanceInput").value = "";
+  discoverPage = 1;
+  await loadStalls();
+});
+document.getElementById("discoverPrevPageBtn").addEventListener("click", async () => {
+  if (discoverPage <= 1) return;
+  discoverPage -= 1;
+  await loadStalls();
+});
+document.getElementById("discoverNextPageBtn").addEventListener("click", async () => {
+  if (discoverPage >= discoverTotalPages) return;
+  discoverPage += 1;
+  await loadStalls();
+});
+
+map.on("zoomend", updateMarkerVisibility);
 
 (async function init() {
   await loadStalls();
   await loadHeatmap();
+  await updateNotificationDot();
+  setInterval(() => {
+    updateNotificationDot().catch(() => {});
+  }, 30000);
   updateMarkerVisibility();
   if (stalls.length > 0) {
     await loadReviews(stalls[0].id);

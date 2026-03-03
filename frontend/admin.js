@@ -14,12 +14,38 @@ const HIDE_MARKERS_ZOOM = 14;
 
 const adminMsg = document.getElementById("adminMsg");
 
+function businessStatusText(stall) {
+  return Number(stall?.is_open) === 1 ? "营业中" : "休息中";
+}
+
+function parseImageUrls(imageValue) {
+  if (!imageValue) return [];
+  if (Array.isArray(imageValue)) return imageValue.filter(Boolean).map((x) => String(x));
+  const raw = String(imageValue).trim();
+  if (!raw) return [];
+  if (raw.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed.filter(Boolean).map((x) => String(x));
+    } catch {
+      // fallback to single URL
+    }
+  }
+  return [raw];
+}
+
+function primaryImageUrl(imageValue) {
+  const urls = parseImageUrls(imageValue);
+  return urls.length > 0 ? urls[0] : "";
+}
+
 function setMsg(text) {
   adminMsg.textContent = text;
 }
 
 async function loadMapStalls() {
-  const stalls = await apiFetch("/api/stalls");
+  const data = await apiFetch("/api/stalls?page=1&page_size=500");
+  const { items: stalls } = unwrapItems(data);
   stallLayer.clearLayers();
   stalls.forEach((s) => {
     L.circleMarker([s.lat, s.lng], {
@@ -31,7 +57,8 @@ async function loadMapStalls() {
     })
       .bindPopup(
         `#${s.id} ${escapeHtml(s.name)}<br/>
-        ${s.image_url ? `<img src="${escapeHtml(s.image_url)}" alt="摊位图片" class="popup-thumb" /><br/>` : ""}
+        ${primaryImageUrl(s.image_url) ? `<img src="${escapeHtml(primaryImageUrl(s.image_url))}" alt="摊位图片" class="popup-thumb" /><br/>` : ""}
+        营业状态: ${escapeHtml(businessStatusText(s))}<br/>
         商户: ${escapeHtml(s.merchant_name || "system")}`,
       )
       .addTo(stallLayer);

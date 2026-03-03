@@ -1,13 +1,16 @@
 ﻿from __future__ import annotations
 
 import json
+import math
 import secrets
 import sqlite3
 from pathlib import Path
 from typing import Any
 
-from flask import Flask, g, jsonify, request
+from flask import Flask, g, jsonify, request, send_from_directory
 from flask_cors import CORS
+from werkzeug.exceptions import RequestEntityTooLarge
+from werkzeug.utils import secure_filename
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
@@ -16,9 +19,13 @@ STALLS_JSON_FILE = DATA_DIR / "stalls.json"
 SUBMISSIONS_JSON_FILE = DATA_DIR / "submissions.json"
 USERS_JSON_FILE = DATA_DIR / "users.json"
 REVIEWS_JSON_FILE = DATA_DIR / "reviews.json"
+UPLOAD_DIR = DATA_DIR / "uploads"
+MAX_UPLOAD_IMAGE_COUNT = 8
+ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 
 app = Flask(__name__)
 CORS(app)
+app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024
 
 # Demo token store (in-memory). In production, replace with JWT/session storage.
 TOKENS: dict[str, dict[str, str]] = {}
@@ -82,7 +89,11 @@ def init_db() -> None:
           lat REAL NOT NULL,
           heat REAL NOT NULL DEFAULT 0.5,
           status TEXT NOT NULL DEFAULT 'approved',
-          merchant_name TEXT NOT NULL DEFAULT 'system'
+          merchant_name TEXT NOT NULL DEFAULT 'system',
+          is_open INTEGER NOT NULL DEFAULT 0 CHECK (is_open IN (0, 1)),
+          live_lng REAL,
+          live_lat REAL,
+          live_updated_at TEXT
         )
         """
     )
@@ -158,11 +169,35 @@ def init_db() -> None:
         """
     )
 
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS notifications (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          username TEXT NOT NULL,
+          role TEXT NOT NULL CHECK (role IN ('user', 'merchant')),
+          title TEXT NOT NULL,
+          content TEXT NOT NULL,
+          related_type TEXT,
+          related_id INTEGER,
+          is_read INTEGER NOT NULL DEFAULT 0 CHECK (is_read IN (0, 1)),
+          created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+        )
+        """
+    )
+
     # Migration for existing database.
     if not column_exists(conn, "stalls", "merchant_name"):
         cur.execute("ALTER TABLE stalls ADD COLUMN merchant_name TEXT NOT NULL DEFAULT 'system'")
     if not column_exists(conn, "stalls", "image_url"):
         cur.execute("ALTER TABLE stalls ADD COLUMN image_url TEXT")
+    if not column_exists(conn, "stalls", "is_open"):
+        cur.execute("ALTER TABLE stalls ADD COLUMN is_open INTEGER NOT NULL DEFAULT 0")
+    if not column_exists(conn, "stalls", "live_lng"):
+        cur.execute("ALTER TABLE stalls ADD COLUMN live_lng REAL")
+    if not column_exists(conn, "stalls", "live_lat"):
+        cur.execute("ALTER TABLE stalls ADD COLUMN live_lat REAL")
+    if not column_exists(conn, "stalls", "live_updated_at"):
+        cur.execute("ALTER TABLE stalls ADD COLUMN live_updated_at TEXT")
     if not column_exists(conn, "users", "status"):
         cur.execute("ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
     if not column_exists(conn, "submissions", "reject_reason"):
@@ -307,14 +342,14 @@ def init_db() -> None:
 def require_role(roles: set[str]) -> tuple[dict[str, str] | None, Any | None]:
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
-        return None, (jsonify({"message": "缺少或非法的 Authorization 头"}), 401)
+        return None, (jsonify({"message": "未登录或登录已过期"}), 401)
 
     token = auth.split(" ", 1)[1].strip()
     user = TOKENS.get(token)
     if user is None:
-        return None, (jsonify({"message": "登录已失效，请重新登录"}), 401)
+        return None, (jsonify({"message": "未登录或登录已过期"}), 401)
     if user["role"] not in roles:
-        return None, (jsonify({"message": "无权限访问该接口"}), 403)
+        return None, (jsonify({"message": "无权限执行此操作"}), 403)
     return user, None
 
 
@@ -328,7 +363,7 @@ def validate_submission(payload: dict[str, Any]) -> tuple[bool, str]:
         lng = float(payload["lng"])
         lat = float(payload["lat"])
     except (TypeError, ValueError):
-        return False, "经纬度必须是数字"
+        return False, "经纬度格式不正确"
 
     if not (-180 <= lng <= 180 and -90 <= lat <= 90):
         return False, "经纬度超出合法范围"
@@ -340,11 +375,11 @@ def validate_review(payload: dict[str, Any]) -> tuple[bool, str]:
     try:
         rating = int(payload.get("rating", 0))
     except (TypeError, ValueError):
-        return False, "评分必须是 1-5 的整数"
+        return False, "评分必须为 1-5 的整数"
 
     content = str(payload.get("content", "")).strip()
     if rating < 1 or rating > 5:
-        return False, "评分必须是 1-5 的整数"
+        return False, "评分必须为 1-5 的整数"
     if not content:
         return False, "评价内容不能为空"
     if len(content) > 500:
@@ -396,6 +431,111 @@ def add_audit_log(
     )
 
 
+def create_notification(
+    db: sqlite3.Connection,
+    username: str,
+    role: str,
+    title: str,
+    content: str,
+    related_type: str = "",
+    related_id: int | None = None,
+) -> None:
+    db.execute(
+        """
+        INSERT INTO notifications (
+          username, role, title, content, related_type, related_id, is_read, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 0, datetime('now', 'localtime'))
+        """,
+        (username, role, title, content, related_type, related_id),
+    )
+
+
+def parse_pagination(default_page_size: int = 20, max_page_size: int = 100) -> tuple[int, int, int]:
+    try:
+        page = int(request.args.get("page", 1))
+    except (TypeError, ValueError):
+        page = 1
+    try:
+        page_size = int(request.args.get("page_size", default_page_size))
+    except (TypeError, ValueError):
+        page_size = default_page_size
+    page = max(1, page)
+    page_size = max(1, min(max_page_size, page_size))
+    offset = (page - 1) * page_size
+    return page, page_size, offset
+
+
+def make_paginated_result(items: list[dict[str, Any]], total: int, page: int, page_size: int) -> dict[str, Any]:
+    total_pages = max(1, math.ceil(total / page_size)) if page_size > 0 else 1
+    return {
+        "items": items,
+        "pagination": {
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "total_pages": total_pages,
+        },
+    }
+
+
+def haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    radius_km = 6371.0
+    d_lat = math.radians(lat2 - lat1)
+    d_lng = math.radians(lng2 - lng1)
+    a = (
+        math.sin(d_lat / 2) ** 2
+        + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(d_lng / 2) ** 2
+    )
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return radius_km * c
+
+
+@app.errorhandler(RequestEntityTooLarge)
+def handle_file_too_large(_: RequestEntityTooLarge) -> Any:
+    return jsonify({"message": "上传失败：文件总大小不能超过 20MB"}), 413
+
+
+@app.get("/uploads/<path:filename>")
+def serve_upload_file(filename: str) -> Any:
+    return send_from_directory(UPLOAD_DIR, filename)
+
+
+@app.post("/api/uploads/images")
+def upload_images() -> Any:
+    user, err = require_role({"merchant", "admin"})
+    if err is not None:
+        return err
+
+    files = request.files.getlist("images")
+    if not files:
+        return jsonify({"message": "请至少选择一张图片"}), 400
+    if len(files) > MAX_UPLOAD_IMAGE_COUNT:
+        return jsonify({"message": f"最多可上传 {MAX_UPLOAD_IMAGE_COUNT} 张图片"}), 400
+
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    urls: list[str] = []
+
+    for file in files:
+        raw_name = str(file.filename or "").strip()
+        if not raw_name:
+            continue
+
+        ext = Path(raw_name).suffix.lower()
+        if ext not in ALLOWED_IMAGE_EXTENSIONS:
+            allowed = ", ".join(sorted(ALLOWED_IMAGE_EXTENSIONS))
+            return jsonify({"message": f"仅支持以下图片格式: {allowed}"}), 400
+
+        unique_name = secure_filename(f"{user['username']}_{secrets.token_hex(12)}{ext}")
+        file_path = UPLOAD_DIR / unique_name
+        file.save(file_path)
+        urls.append(f"{request.host_url.rstrip('/')}/uploads/{unique_name}")
+
+    if not urls:
+        return jsonify({"message": "未检测到有效图片"}), 400
+
+    return jsonify({"message": "上传成功", "urls": urls}), 201
+
+
 @app.get("/health")
 def health() -> Any:
     return jsonify({"status": "ok", "db": str(DB_FILE)})
@@ -409,7 +549,7 @@ def login() -> Any:
     password = str(payload.get("password", "")).strip()
 
     if not role or not username or not password:
-        return jsonify({"message": "role、username、password 均为必填"}), 400
+        return jsonify({"message": "角色、用户名和密码不能为空"}), 400
 
     db = get_db()
     matched = db.execute(
@@ -418,41 +558,136 @@ def login() -> Any:
     ).fetchone()
 
     if matched is None:
-        return jsonify({"message": "账号、密码或角色不正确"}), 401
+        return jsonify({"message": "账号或密码错误"}), 401
     if matched["status"] != "active":
-        return jsonify({"message": "账号已被冻结，请联系管理员"}), 403
+        return jsonify({"message": "账号已被冻结"}), 403
 
     token = secrets.token_urlsafe(24)
     TOKENS[token] = {"username": matched["username"], "role": matched["role"]}
     return jsonify({"token": token, "user": {"username": matched["username"], "role": matched["role"]}})
 
 
+@app.post("/api/auth/register")
+def register() -> Any:
+    payload = request.get_json(silent=True) or {}
+    role = str(payload.get("role", "")).strip()
+    username = str(payload.get("username", "")).strip()
+    password = str(payload.get("password", "")).strip()
+
+    if role not in {"user", "merchant"}:
+        return jsonify({"message": "角色参数不合法"}), 400
+    if not username or not password:
+        return jsonify({"message": "用户名和密码不能为空"}), 400
+    if len(username) < 3 or len(username) > 30:
+        return jsonify({"message": "用户名长度需为 3-30 个字符"}), 400
+    if len(password) < 6 or len(password) > 64:
+        return jsonify({"message": "密码长度需为 6-64 个字符"}), 400
+
+    db = get_db()
+    exists = db.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
+    if exists is not None:
+        return jsonify({"message": "用户名已存在"}), 409
+
+    db.execute(
+        "INSERT INTO users (username, password, role, status) VALUES (?, ?, ?, 'active')",
+        (username, password, role),
+    )
+    db.commit()
+    return jsonify({"message": "注册成功"}), 201
+
+
 @app.get("/api/stalls")
 def list_stalls() -> Any:
-    category = request.args.get("category")
+    category = str(request.args.get("category", "")).strip()
+    q = str(request.args.get("q", "")).strip().lower()
+    sort = str(request.args.get("sort", "id_asc")).strip()
+    min_rating_raw = request.args.get("min_rating")
+    center_lat_raw = request.args.get("center_lat")
+    center_lng_raw = request.args.get("center_lng")
+    max_distance_km_raw = request.args.get("max_distance_km")
+    page, page_size, offset = parse_pagination(default_page_size=20, max_page_size=100)
     db = get_db()
 
-    if category:
-        rows = db.execute(
-            """
-            SELECT id, name, category, description, image_url, open_time, lng, lat, heat, status, merchant_name
-            FROM stalls
-            WHERE status = 'approved' AND category = ?
-            ORDER BY id ASC
-            """,
-            (category,),
-        ).fetchall()
-    else:
-        rows = db.execute(
-            """
-            SELECT id, name, category, description, image_url, open_time, lng, lat, heat, status, merchant_name
-            FROM stalls
-            WHERE status = 'approved'
-            ORDER BY id ASC
-            """
-        ).fetchall()
+    rows = db.execute(
+        """
+        SELECT
+          s.id, s.name, s.category, s.description, s.image_url, s.open_time,
+          CASE WHEN s.is_open = 1 AND s.live_lng IS NOT NULL THEN s.live_lng ELSE s.lng END AS lng,
+          CASE WHEN s.is_open = 1 AND s.live_lat IS NOT NULL THEN s.live_lat ELSE s.lat END AS lat,
+          s.heat, s.status, s.merchant_name, s.is_open, s.live_lng, s.live_lat, s.live_updated_at,
+          CASE WHEN s.is_open = 1 THEN '营业中' ELSE '休息中' END AS business_status,
+          COALESCE(rr.avg_rating, 0) AS avg_rating,
+          COALESCE(rr.review_count, 0) AS review_count
+        FROM stalls s
+        LEFT JOIN (
+          SELECT stall_id, AVG(rating) AS avg_rating, COUNT(*) AS review_count
+          FROM reviews
+          WHERE status = 'approved'
+          GROUP BY stall_id
+        ) rr ON rr.stall_id = s.id
+        WHERE s.status = 'approved'
+        ORDER BY s.id ASC
+        """
+    ).fetchall()
+    items = [dict(r) for r in rows]
 
-    return jsonify([dict(r) for r in rows])
+    if category:
+        items = [x for x in items if str(x.get("category", "")).strip() == category]
+    if q:
+        items = [
+            x
+            for x in items
+            if q in str(x.get("name", "")).lower()
+            or q in str(x.get("category", "")).lower()
+            or q in str(x.get("description", "")).lower()
+        ]
+
+    min_rating = None
+    if min_rating_raw not in (None, ""):
+        try:
+            min_rating = float(min_rating_raw)
+        except (TypeError, ValueError):
+            return jsonify({"message": "最小评分参数格式错误"}), 400
+        items = [x for x in items if float(x.get("avg_rating", 0.0)) >= min_rating]
+
+    center_lat = None
+    center_lng = None
+    max_distance_km = None
+    if max_distance_km_raw not in (None, ""):
+        try:
+            max_distance_km = float(max_distance_km_raw)
+        except (TypeError, ValueError):
+            return jsonify({"message": "最大距离参数格式错误"}), 400
+        try:
+            center_lat = float(center_lat_raw)
+            center_lng = float(center_lng_raw)
+        except (TypeError, ValueError):
+            return jsonify({"message": "中心点经纬度参数格式错误"}), 400
+
+    for item in items:
+        if center_lat is not None and center_lng is not None:
+            item["distance_km"] = round(
+                haversine_km(center_lat, center_lng, float(item["lat"]), float(item["lng"])),
+                3,
+            )
+        else:
+            item["distance_km"] = None
+
+    if max_distance_km is not None:
+        items = [x for x in items if x["distance_km"] is not None and float(x["distance_km"]) <= max_distance_km]
+
+    if sort == "rating_desc":
+        items.sort(key=lambda x: (float(x.get("avg_rating", 0.0)), int(x.get("review_count", 0))), reverse=True)
+    elif sort == "distance_asc":
+        items.sort(key=lambda x: float(x.get("distance_km") if x.get("distance_km") is not None else 1e12))
+    elif sort == "id_desc":
+        items.sort(key=lambda x: int(x.get("id", 0)), reverse=True)
+    else:
+        items.sort(key=lambda x: int(x.get("id", 0)))
+
+    total = len(items)
+    paged = items[offset : offset + page_size]
+    return jsonify(make_paginated_result(paged, total, page, page_size))
 
 
 @app.get("/api/stalls/<int:stall_id>")
@@ -460,7 +695,11 @@ def get_stall(stall_id: int) -> Any:
     db = get_db()
     row = db.execute(
         """
-        SELECT id, name, category, description, image_url, open_time, lng, lat, heat, status, merchant_name
+        SELECT id, name, category, description, image_url, open_time,
+               CASE WHEN is_open = 1 AND live_lng IS NOT NULL THEN live_lng ELSE lng END AS lng,
+               CASE WHEN is_open = 1 AND live_lat IS NOT NULL THEN live_lat ELSE lat END AS lat,
+               heat, status, merchant_name, is_open, live_lng, live_lat, live_updated_at,
+               CASE WHEN is_open = 1 THEN '营业中' ELSE '休息中' END AS business_status
         FROM stalls
         WHERE id = ? AND status = 'approved'
         """,
@@ -468,7 +707,7 @@ def get_stall(stall_id: int) -> Any:
     ).fetchone()
 
     if row is None:
-        return jsonify({"message": "未找到摊位"}), 404
+        return jsonify({"message": "摊位不存在"}), 404
 
     return jsonify(dict(row))
 
@@ -522,16 +761,32 @@ def list_merchant_stalls() -> Any:
         return err
 
     db = get_db()
-    rows = db.execute(
-        """
-        SELECT id, name, category, description, image_url, open_time, lng, lat, heat, status, merchant_name
+    q = str(request.args.get("q", "")).strip()
+    status = str(request.args.get("status", "")).strip()
+    page, page_size, offset = parse_pagination(default_page_size=20, max_page_size=100)
+
+    sql = """
+        SELECT id, name, category, description, image_url, open_time, lng, lat, heat, status, merchant_name,
+               is_open, live_lng, live_lat, live_updated_at,
+               CASE WHEN is_open = 1 THEN '营业中' ELSE '休息中' END AS business_status
         FROM stalls
         WHERE merchant_name = ?
-        ORDER BY id DESC
-        """,
-        (user["username"],),
-    ).fetchall()
-    return jsonify([dict(r) for r in rows])
+    """
+    params: list[Any] = [user["username"]]
+    if status:
+        sql += " AND status = ?"
+        params.append(status)
+    if q:
+        sql += " AND (name LIKE ? OR category LIKE ?)"
+        like_q = f"%{q}%"
+        params.extend([like_q, like_q])
+
+    count_row = db.execute(f"SELECT COUNT(*) FROM ({sql})", tuple(params)).fetchone()
+    total = int(count_row[0]) if count_row else 0
+    sql += " ORDER BY id DESC LIMIT ? OFFSET ?"
+    params.extend([page_size, offset])
+    rows = db.execute(sql, tuple(params)).fetchall()
+    return jsonify(make_paginated_result([dict(r) for r in rows], total, page, page_size))
 
 
 @app.get("/api/merchant/submissions")
@@ -541,11 +796,25 @@ def list_merchant_submissions() -> Any:
         return err
 
     db = get_db()
-    rows = db.execute(
-        "SELECT * FROM submissions WHERE merchant_name = ? ORDER BY id DESC",
-        (user["username"],),
-    ).fetchall()
-    return jsonify([dict(r) for r in rows])
+    status = str(request.args.get("status", "")).strip()
+    q = str(request.args.get("q", "")).strip()
+    page, page_size, offset = parse_pagination(default_page_size=20, max_page_size=100)
+    sql = "SELECT * FROM submissions WHERE merchant_name = ?"
+    params: list[Any] = [user["username"]]
+    if status:
+        sql += " AND status = ?"
+        params.append(status)
+    if q:
+        sql += " AND (name LIKE ? OR category LIKE ? OR action LIKE ?)"
+        like_q = f"%{q}%"
+        params.extend([like_q, like_q, like_q])
+
+    count_row = db.execute(f"SELECT COUNT(*) FROM ({sql})", tuple(params)).fetchone()
+    total = int(count_row[0]) if count_row else 0
+    sql += " ORDER BY id DESC LIMIT ? OFFSET ?"
+    params.extend([page_size, offset])
+    rows = db.execute(sql, tuple(params)).fetchall()
+    return jsonify(make_paginated_result([dict(r) for r in rows], total, page, page_size))
 
 
 @app.post("/api/merchant/stalls")
@@ -563,7 +832,7 @@ def create_merchant_stall_submission() -> Any:
     db = get_db()
     new_id = create_submission_record(db, user["username"], payload)
     submission = db.execute("SELECT * FROM submissions WHERE id = ?", (new_id,)).fetchone()
-    return jsonify({"message": "新增摊位申请已提交，等待管理员审核", "submission": dict(submission)}), 201
+    return jsonify({"message": "提交成功", "submission": dict(submission)}), 201
 
 
 @app.post("/api/merchant/stalls/<int:stall_id>/update")
@@ -585,17 +854,73 @@ def create_merchant_stall_update_submission(stall_id: int) -> Any:
         (stall_id, user["username"]),
     ).fetchone()
     if owned is None:
-        return jsonify({"message": "只能修改你自己的摊位"}), 403
+        return jsonify({"message": "无权操作该摊位"}), 403
 
     new_id = create_submission_record(db, user["username"], payload)
     submission = db.execute("SELECT * FROM submissions WHERE id = ?", (new_id,)).fetchone()
-    return jsonify({"message": "修改申请已提交，等待管理员审核", "submission": dict(submission)}), 201
+    return jsonify({"message": "提交成功", "submission": dict(submission)}), 201
 
 
 @app.post("/api/merchant/submissions")
 def create_submission_compat() -> Any:
     # Backward-compatible endpoint.
     return create_merchant_stall_submission()
+
+
+@app.post("/api/merchant/stalls/<int:stall_id>/open")
+def open_merchant_stall(stall_id: int) -> Any:
+    user, err = require_role({"merchant"})
+    if err is not None:
+        return err
+
+    payload = request.get_json(silent=True) or {}
+    db = get_db()
+    stall = db.execute(
+        "SELECT id, name, merchant_name, status, lng, lat FROM stalls WHERE id = ? AND merchant_name = ?",
+        (stall_id, user["username"]),
+    ).fetchone()
+    if stall is None:
+        return jsonify({"message": "无权操作该摊位"}), 403
+    if stall["status"] != "approved":
+        return jsonify({"message": "仅已通过审核的摊位可出摊"}), 400
+
+    try:
+        live_lng = float(payload.get("lng", stall["lng"]))
+        live_lat = float(payload.get("lat", stall["lat"]))
+    except (TypeError, ValueError):
+        return jsonify({"message": "经纬度格式不正确"}), 400
+
+    if not (-180 <= live_lng <= 180 and -90 <= live_lat <= 90):
+        return jsonify({"message": "经纬度超出合法范围"}), 400
+
+    db.execute(
+        "UPDATE stalls SET is_open = 1, live_lng = ?, live_lat = ?, live_updated_at = datetime('now', 'localtime') WHERE id = ?",
+        (live_lng, live_lat, stall_id),
+    )
+    db.commit()
+    return jsonify({"message": "出摊成功"})
+
+
+@app.post("/api/merchant/stalls/<int:stall_id>/close")
+def close_merchant_stall(stall_id: int) -> Any:
+    user, err = require_role({"merchant"})
+    if err is not None:
+        return err
+
+    db = get_db()
+    stall = db.execute(
+        "SELECT id, merchant_name FROM stalls WHERE id = ? AND merchant_name = ?",
+        (stall_id, user["username"]),
+    ).fetchone()
+    if stall is None:
+        return jsonify({"message": "无权操作该摊位"}), 403
+
+    db.execute(
+        "UPDATE stalls SET is_open = 0, live_updated_at = datetime('now', 'localtime') WHERE id = ?",
+        (stall_id,),
+    )
+    db.commit()
+    return jsonify({"message": "收摊成功"})
 
 
 @app.get("/api/admin/submissions")
@@ -605,17 +930,25 @@ def list_admin_submissions() -> Any:
         return err
 
     status = request.args.get("status", "pending")
+    q = str(request.args.get("q", "")).strip()
+    page, page_size, offset = parse_pagination(default_page_size=20, max_page_size=100)
     db = get_db()
-
+    sql = "SELECT * FROM submissions WHERE 1=1"
+    params: list[Any] = []
     if status:
-        rows = db.execute(
-            "SELECT * FROM submissions WHERE status = ? ORDER BY id ASC",
-            (status,),
-        ).fetchall()
-    else:
-        rows = db.execute("SELECT * FROM submissions ORDER BY id ASC").fetchall()
+        sql += " AND status = ?"
+        params.append(status)
+    if q:
+        sql += " AND (merchant_name LIKE ? OR name LIKE ? OR category LIKE ? OR action LIKE ?)"
+        like_q = f"%{q}%"
+        params.extend([like_q, like_q, like_q, like_q])
 
-    return jsonify([dict(r) for r in rows])
+    count_row = db.execute(f"SELECT COUNT(*) FROM ({sql})", tuple(params)).fetchone()
+    total = int(count_row[0]) if count_row else 0
+    sql += " ORDER BY id ASC LIMIT ? OFFSET ?"
+    params.extend([page_size, offset])
+    rows = db.execute(sql, tuple(params)).fetchall()
+    return jsonify(make_paginated_result([dict(r) for r in rows], total, page, page_size))
 
 
 @app.post("/api/admin/submissions/<int:submission_id>/approve")
@@ -627,10 +960,10 @@ def approve_submission(submission_id: int) -> Any:
     db = get_db()
     submission = db.execute("SELECT * FROM submissions WHERE id = ?", (submission_id,)).fetchone()
     if submission is None:
-        return jsonify({"message": "未找到提交记录"}), 404
+        return jsonify({"message": "提交记录不存在"}), 404
 
     if submission["status"] != "pending":
-        return jsonify({"message": "该记录不是待审核状态"}), 400
+        return jsonify({"message": "该提交已审核，无法重复操作"}), 400
 
     action = submission["action"] or "create"
 
@@ -693,9 +1026,18 @@ def approve_submission(submission_id: int) -> Any:
         operator_name=admin_user["username"],
         detail=f"{submission['merchant_name']} -> {submission['name']}",
     )
+    create_notification(
+        db,
+        username=submission["merchant_name"],
+        role="merchant",
+        title="提交审核通过",
+        content=f"您的摊位提交（{submission['name']}）已审核通过。",
+        related_type="submission",
+        related_id=submission_id,
+    )
     db.commit()
 
-    return jsonify({"message": "审核通过并已写入数据库"})
+    return jsonify({"message": "审核通过成功"})
 
 
 @app.post("/api/admin/submissions/<int:submission_id>/reject")
@@ -707,16 +1049,16 @@ def reject_submission(submission_id: int) -> Any:
     payload = request.get_json(silent=True) or {}
     reject_reason = str(payload.get("reject_reason", "")).strip()
     if not reject_reason:
-        return jsonify({"message": "请填写驳回原因"}), 400
+        return jsonify({"message": "驳回原因不能为空"}), 400
     if len(reject_reason) > 200:
         return jsonify({"message": "驳回原因不能超过 200 字"}), 400
 
     db = get_db()
     row = db.execute("SELECT id, status FROM submissions WHERE id = ?", (submission_id,)).fetchone()
     if row is None:
-        return jsonify({"message": "未找到提交记录"}), 404
+        return jsonify({"message": "提交记录不存在"}), 404
     if row["status"] != "pending":
-        return jsonify({"message": "该记录不是待审核状态"}), 400
+        return jsonify({"message": "该提交已审核，无法重复操作"}), 400
 
     db.execute(
         "UPDATE submissions SET status = 'rejected', reject_reason = ?, reviewed_at = datetime('now', 'localtime') WHERE id = ?",
@@ -730,8 +1072,157 @@ def reject_submission(submission_id: int) -> Any:
         operator_name=admin_user["username"],
         detail=reject_reason,
     )
+    submission = db.execute("SELECT merchant_name, name FROM submissions WHERE id = ?", (submission_id,)).fetchone()
+    if submission is not None:
+        create_notification(
+            db,
+            username=submission["merchant_name"],
+            role="merchant",
+            title="提交审核驳回",
+            content=f"您的摊位提交被驳回，原因：{reject_reason}",
+            related_type="submission",
+            related_id=submission_id,
+        )
     db.commit()
-    return jsonify({"message": "已驳回该提交"})
+    return jsonify({"message": "驳回成功"})
+
+
+@app.post("/api/admin/submissions/batch-review")
+def batch_review_submissions() -> Any:
+    admin_user, err = require_role({"admin"})
+    if err is not None:
+        return err
+
+    payload = request.get_json(silent=True) or {}
+    ids_raw = payload.get("ids")
+    action = str(payload.get("action", "")).strip()
+    reject_reason = str(payload.get("reject_reason", "")).strip()
+
+    if not isinstance(ids_raw, list) or not ids_raw:
+        return jsonify({"message": "请提供待审核的提交 ID 列表"}), 400
+    try:
+        ids = [int(x) for x in ids_raw]
+    except (TypeError, ValueError):
+        return jsonify({"message": "提交 ID 列表格式错误"}), 400
+    if action not in {"approve", "reject"}:
+        return jsonify({"message": "审核动作不合法"}), 400
+    if action == "reject" and not reject_reason:
+        return jsonify({"message": "批量驳回时必须填写驳回原因"}), 400
+
+    db = get_db()
+    placeholders = ",".join("?" for _ in ids)
+    rows = db.execute(
+        f"SELECT * FROM submissions WHERE id IN ({placeholders})",
+        tuple(ids),
+    ).fetchall()
+    rows_by_id = {int(r["id"]): r for r in rows}
+
+    done = 0
+    skipped: list[dict[str, Any]] = []
+    for sid in ids:
+        submission = rows_by_id.get(sid)
+        if submission is None:
+            skipped.append({"id": sid, "reason": "提交记录不存在"})
+            continue
+        if submission["status"] != "pending":
+            skipped.append({"id": sid, "reason": "提交不是待审核状态"})
+            continue
+
+        if action == "approve":
+            sub_action = submission["action"] or "create"
+            if sub_action == "update" and submission["target_stall_id"]:
+                target = db.execute(
+                    "SELECT id FROM stalls WHERE id = ?",
+                    (int(submission["target_stall_id"]),),
+                ).fetchone()
+                if target is None:
+                    skipped.append({"id": sid, "reason": "目标摊位不存在"})
+                    continue
+                db.execute(
+                    """
+                    UPDATE stalls
+                    SET name = ?, category = ?, description = ?, image_url = ?, open_time = ?, lng = ?, lat = ?, heat = ?,
+                        status = 'approved', merchant_name = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        submission["name"],
+                        submission["category"],
+                        submission["description"],
+                        submission["image_url"],
+                        submission["open_time"],
+                        float(submission["lng"]),
+                        float(submission["lat"]),
+                        float(submission["heat"]),
+                        submission["merchant_name"],
+                        int(submission["target_stall_id"]),
+                    ),
+                )
+            else:
+                db.execute(
+                    """
+                    INSERT INTO stalls (name, category, description, image_url, open_time, lng, lat, heat, status, merchant_name)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', ?)
+                    """,
+                    (
+                        submission["name"],
+                        submission["category"],
+                        submission["description"],
+                        submission["image_url"],
+                        submission["open_time"],
+                        float(submission["lng"]),
+                        float(submission["lat"]),
+                        float(submission["heat"]),
+                        submission["merchant_name"],
+                    ),
+                )
+            db.execute(
+                "UPDATE submissions SET status = 'approved', reject_reason = NULL, reviewed_at = datetime('now', 'localtime') WHERE id = ?",
+                (sid,),
+            )
+            add_audit_log(
+                db,
+                entity_type="submission",
+                entity_id=sid,
+                action="batch_approve",
+                operator_name=admin_user["username"],
+                detail=f"{submission['merchant_name']} -> {submission['name']}",
+            )
+            create_notification(
+                db,
+                username=submission["merchant_name"],
+                role="merchant",
+                title="提交审核通过",
+                content=f"您的摊位提交（{submission['name']}）已审核通过。",
+                related_type="submission",
+                related_id=sid,
+            )
+        else:
+            db.execute(
+                "UPDATE submissions SET status = 'rejected', reject_reason = ?, reviewed_at = datetime('now', 'localtime') WHERE id = ?",
+                (reject_reason, sid),
+            )
+            add_audit_log(
+                db,
+                entity_type="submission",
+                entity_id=sid,
+                action="batch_reject",
+                operator_name=admin_user["username"],
+                detail=reject_reason,
+            )
+            create_notification(
+                db,
+                username=submission["merchant_name"],
+                role="merchant",
+                title="提交审核驳回",
+                content=f"您的摊位提交被驳回，原因：{reject_reason}",
+                related_type="submission",
+                related_id=sid,
+            )
+        done += 1
+
+    db.commit()
+    return jsonify({"message": f"批量审核完成，成功 {done} 条，跳过 {len(skipped)} 条", "done": done, "skipped": skipped})
 
 
 @app.get("/api/admin/users")
@@ -772,7 +1263,7 @@ def create_admin_user() -> Any:
     password = str(payload.get("password", "")).strip()
     role = str(payload.get("role", "")).strip()
     if not username or not password or role not in {"user", "merchant"}:
-        return jsonify({"message": "username、password 必填，role 仅支持 user/merchant"}), 400
+        return jsonify({"message": "用户名、密码或角色参数不合法"}), 400
 
     db = get_db()
     exists = db.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
@@ -793,7 +1284,7 @@ def create_admin_user() -> Any:
     )
     db.commit()
     row = db.execute("SELECT id, username, role, status FROM users WHERE id = ?", (cur.lastrowid,)).fetchone()
-    return jsonify({"message": "账号创建成功", "user": dict(row)}), 201
+    return jsonify({"message": "创建用户成功", "user": dict(row)}), 201
 
 
 @app.post("/api/admin/users/<int:user_id>/freeze")
@@ -805,9 +1296,9 @@ def freeze_admin_user(user_id: int) -> Any:
     db = get_db()
     row = db.execute("SELECT id, role FROM users WHERE id = ?", (user_id,)).fetchone()
     if row is None:
-        return jsonify({"message": "账号不存在"}), 404
+        return jsonify({"message": "用户不存在"}), 404
     if row["role"] == "admin":
-        return jsonify({"message": "不允许冻结管理员账号"}), 400
+        return jsonify({"message": "不能冻结管理员账号"}), 400
 
     db.execute("UPDATE users SET status = 'frozen' WHERE id = ?", (user_id,))
     add_audit_log(
@@ -819,7 +1310,7 @@ def freeze_admin_user(user_id: int) -> Any:
         detail=f"user_id={user_id}",
     )
     db.commit()
-    return jsonify({"message": "账号已冻结"})
+    return jsonify({"message": "冻结成功"})
 
 
 @app.post("/api/admin/users/<int:user_id>/unfreeze")
@@ -831,7 +1322,7 @@ def unfreeze_admin_user(user_id: int) -> Any:
     db = get_db()
     row = db.execute("SELECT id FROM users WHERE id = ?", (user_id,)).fetchone()
     if row is None:
-        return jsonify({"message": "账号不存在"}), 404
+        return jsonify({"message": "用户不存在"}), 404
 
     db.execute("UPDATE users SET status = 'active' WHERE id = ?", (user_id,))
     add_audit_log(
@@ -843,38 +1334,36 @@ def unfreeze_admin_user(user_id: int) -> Any:
         detail=f"user_id={user_id}",
     )
     db.commit()
-    return jsonify({"message": "账号已解冻"})
+    return jsonify({"message": "解冻成功"})
 
 
 @app.get("/api/reviews")
 def list_public_reviews() -> Any:
     stall_id = request.args.get("stall_id")
+    q = str(request.args.get("q", "")).strip()
+    page, page_size, offset = parse_pagination(default_page_size=20, max_page_size=100)
     db = get_db()
 
+    sql_base = """
+        SELECT r.id, r.stall_id, r.user_name, r.rating, r.content, r.merchant_reply, r.status,
+               r.created_at, r.updated_at, s.name AS stall_name
+        FROM reviews r
+        JOIN stalls s ON s.id = r.stall_id
+        WHERE r.status = 'approved'
+    """
+    params: list[Any] = []
     if stall_id:
-        rows = db.execute(
-            """
-            SELECT r.id, r.stall_id, r.user_name, r.rating, r.content, r.merchant_reply, r.status,
-                   r.created_at, r.updated_at, s.name AS stall_name
-            FROM reviews r
-            JOIN stalls s ON s.id = r.stall_id
-            WHERE r.status = 'approved' AND r.stall_id = ?
-            ORDER BY r.id DESC
-            """,
-            (stall_id,),
-        ).fetchall()
-    else:
-        rows = db.execute(
-            """
-            SELECT r.id, r.stall_id, r.user_name, r.rating, r.content, r.merchant_reply, r.status,
-                   r.created_at, r.updated_at, s.name AS stall_name
-            FROM reviews r
-            JOIN stalls s ON s.id = r.stall_id
-            WHERE r.status = 'approved'
-            ORDER BY r.id DESC
-            LIMIT 200
-            """
-        ).fetchall()
+        sql_base += " AND r.stall_id = ?"
+        params.append(stall_id)
+    if q:
+        sql_base += " AND (r.content LIKE ? OR r.user_name LIKE ? OR s.name LIKE ?)"
+        like_q = f"%{q}%"
+        params.extend([like_q, like_q, like_q])
+
+    count_row = db.execute(f"SELECT COUNT(*) FROM ({sql_base})", tuple(params)).fetchone()
+    total = int(count_row[0]) if count_row else 0
+    sql = f"{sql_base} ORDER BY r.id DESC LIMIT ? OFFSET ?"
+    rows = db.execute(sql, tuple(params + [page_size, offset])).fetchall()
 
     reviews = [dict(r) for r in rows]
     review_ids = [int(r["id"]) for r in reviews]
@@ -898,7 +1387,7 @@ def list_public_reviews() -> Any:
     for r in reviews:
         r["replies"] = replies_by_review.get(int(r["id"]), [])
 
-    return jsonify(reviews)
+    return jsonify(make_paginated_result(reviews, total, page, page_size))
 
 
 @app.post("/api/reviews")
@@ -915,12 +1404,12 @@ def create_review() -> Any:
     try:
         stall_id = int(payload.get("stall_id"))
     except (TypeError, ValueError):
-        return jsonify({"message": "stall_id 非法"}), 400
+        return jsonify({"message": "摊位 ID 格式错误"}), 400
 
     db = get_db()
     stall = db.execute("SELECT id FROM stalls WHERE id = ? AND status = 'approved'", (stall_id,)).fetchone()
     if stall is None:
-        return jsonify({"message": "目标摊位不存在"}), 404
+        return jsonify({"message": "摊位不存在或未通过审核"}), 404
 
     cur = db.execute(
         """
@@ -932,7 +1421,7 @@ def create_review() -> Any:
     db.commit()
 
     row = db.execute("SELECT * FROM reviews WHERE id = ?", (cur.lastrowid,)).fetchone()
-    return jsonify({"message": "评价已提交，等待管理员审核", "review": dict(row)}), 201
+    return jsonify({"message": "评价提交成功，等待审核", "review": dict(row)}), 201
 
 
 @app.post("/api/reviews/<int:review_id>/replies")
@@ -955,13 +1444,13 @@ def create_review_reply(review_id: int) -> Any:
         (review_id,),
     ).fetchone()
     if review_row is None:
-        return jsonify({"message": "目标评论不存在或未通过审核"}), 404
+        return jsonify({"message": "评价不存在或未通过审核"}), 404
 
     if parent_reply_id is not None:
         try:
             parent_reply_id = int(parent_reply_id)
         except (TypeError, ValueError):
-            return jsonify({"message": "parent_reply_id 非法"}), 400
+            return jsonify({"message": "父回复 ID 格式错误"}), 400
         parent_row = db.execute(
             "SELECT id FROM review_replies WHERE id = ? AND review_id = ?",
             (parent_reply_id, review_id),
@@ -985,7 +1474,7 @@ def create_review_reply(review_id: int) -> Any:
         """,
         (cur.lastrowid,),
     ).fetchone()
-    return jsonify({"message": "回复已发布", "reply": dict(row)}), 201
+    return jsonify({"message": "回复成功", "reply": dict(row)}), 201
 
 
 @app.get("/api/merchant/reviews")
@@ -996,6 +1485,8 @@ def list_merchant_reviews() -> Any:
 
     status = request.args.get("status")
     stall_id = request.args.get("stall_id")
+    q = str(request.args.get("q", "")).strip()
+    page, page_size, offset = parse_pagination(default_page_size=20, max_page_size=100)
     db = get_db()
 
     sql = """
@@ -1010,16 +1501,24 @@ def list_merchant_reviews() -> Any:
         try:
             stall_id_int = int(stall_id)
         except (TypeError, ValueError):
-            return jsonify({"message": "stall_id 非法"}), 400
+            return jsonify({"message": "摊位 ID 格式错误"}), 400
         sql += " AND r.stall_id = ?"
         params.append(stall_id_int)
     if status:
         sql += " AND r.status = ?"
         params.append(status)
-    sql += " ORDER BY r.id DESC"
+    if q:
+        sql += " AND (r.content LIKE ? OR r.user_name LIKE ? OR s.name LIKE ?)"
+        like_q = f"%{q}%"
+        params.extend([like_q, like_q, like_q])
+
+    count_row = db.execute(f"SELECT COUNT(*) FROM ({sql})", tuple(params)).fetchone()
+    total = int(count_row[0]) if count_row else 0
+    sql += " ORDER BY r.id DESC LIMIT ? OFFSET ?"
+    params.extend([page_size, offset])
 
     rows = db.execute(sql, tuple(params)).fetchall()
-    return jsonify([dict(r) for r in rows])
+    return jsonify(make_paginated_result([dict(r) for r in rows], total, page, page_size))
 
 
 @app.post("/api/merchant/reviews/<int:review_id>/reply")
@@ -1038,7 +1537,7 @@ def reply_review(review_id: int) -> Any:
     db = get_db()
     row = db.execute(
         """
-        SELECT r.id
+        SELECT r.id, r.user_name, s.name AS stall_name
         FROM reviews r
         JOIN stalls s ON s.id = r.stall_id
         WHERE r.id = ? AND s.merchant_name = ?
@@ -1046,7 +1545,7 @@ def reply_review(review_id: int) -> Any:
         (review_id, user["username"]),
     ).fetchone()
     if row is None:
-        return jsonify({"message": "无法回复不属于你的评价"}), 403
+        return jsonify({"message": "无权回复该评价"}), 403
 
     db.execute(
         """
@@ -1056,8 +1555,17 @@ def reply_review(review_id: int) -> Any:
         """,
         (reply, review_id),
     )
+    create_notification(
+        db,
+        username=row["user_name"],
+        role="user",
+        title="收到商家回复",
+        content=f"您在摊位「{row['stall_name']}」的评价收到了商家回复。",
+        related_type="review",
+        related_id=review_id,
+    )
     db.commit()
-    return jsonify({"message": "回复已保存"})
+    return jsonify({"message": "回复成功"})
 
 
 @app.get("/api/admin/reviews")
@@ -1067,6 +1575,8 @@ def list_admin_reviews() -> Any:
         return err
 
     status = request.args.get("status")
+    q = str(request.args.get("q", "")).strip()
+    page, page_size, offset = parse_pagination(default_page_size=20, max_page_size=100)
     db = get_db()
 
     sql = """
@@ -1079,10 +1589,18 @@ def list_admin_reviews() -> Any:
     if status:
         sql += " WHERE r.status = ?"
         params.append(status)
-    sql += " ORDER BY r.id DESC"
+    if q:
+        sql += (" AND" if status else " WHERE") + " (r.content LIKE ? OR r.user_name LIKE ? OR s.name LIKE ? OR s.merchant_name LIKE ?)"
+        like_q = f"%{q}%"
+        params.extend([like_q, like_q, like_q, like_q])
+
+    count_row = db.execute(f"SELECT COUNT(*) FROM ({sql})", tuple(params)).fetchone()
+    total = int(count_row[0]) if count_row else 0
+    sql += " ORDER BY r.id DESC LIMIT ? OFFSET ?"
+    params.extend([page_size, offset])
 
     rows = db.execute(sql, tuple(params)).fetchall()
-    return jsonify([dict(r) for r in rows])
+    return jsonify(make_paginated_result([dict(r) for r in rows], total, page, page_size))
 
 
 @app.post("/api/admin/reviews/<int:review_id>/approve")
@@ -1092,7 +1610,7 @@ def approve_review(review_id: int) -> Any:
         return err
 
     db = get_db()
-    row = db.execute("SELECT id FROM reviews WHERE id = ?", (review_id,)).fetchone()
+    row = db.execute("SELECT id, user_name FROM reviews WHERE id = ?", (review_id,)).fetchone()
     if row is None:
         return jsonify({"message": "评价不存在"}), 404
 
@@ -1108,8 +1626,17 @@ def approve_review(review_id: int) -> Any:
         operator_name=admin_user["username"],
         detail=f"review_id={review_id}",
     )
+    create_notification(
+        db,
+        username=row["user_name"],
+        role="user",
+        title="评价审核通过",
+        content="您的评价已通过审核并对外展示。",
+        related_type="review",
+        related_id=review_id,
+    )
     db.commit()
-    return jsonify({"message": "评价已审核通过"})
+    return jsonify({"message": "审核通过成功"})
 
 
 @app.post("/api/admin/reviews/<int:review_id>/reject")
@@ -1119,7 +1646,7 @@ def reject_review(review_id: int) -> Any:
         return err
 
     db = get_db()
-    row = db.execute("SELECT id FROM reviews WHERE id = ?", (review_id,)).fetchone()
+    row = db.execute("SELECT id, user_name FROM reviews WHERE id = ?", (review_id,)).fetchone()
     if row is None:
         return jsonify({"message": "评价不存在"}), 404
 
@@ -1135,8 +1662,84 @@ def reject_review(review_id: int) -> Any:
         operator_name=admin_user["username"],
         detail=f"review_id={review_id}",
     )
+    create_notification(
+        db,
+        username=row["user_name"],
+        role="user",
+        title="评价审核驳回",
+        content="您的评价未通过审核。",
+        related_type="review",
+        related_id=review_id,
+    )
     db.commit()
-    return jsonify({"message": "评价已驳回"})
+    return jsonify({"message": "驳回成功"})
+
+
+@app.post("/api/admin/reviews/batch-review")
+def batch_review_reviews() -> Any:
+    admin_user, err = require_role({"admin"})
+    if err is not None:
+        return err
+
+    payload = request.get_json(silent=True) or {}
+    ids_raw = payload.get("ids")
+    action = str(payload.get("action", "")).strip()
+    if not isinstance(ids_raw, list) or not ids_raw:
+        return jsonify({"message": "请提供待审核的评价 ID 列表"}), 400
+    try:
+        ids = [int(x) for x in ids_raw]
+    except (TypeError, ValueError):
+        return jsonify({"message": "评价 ID 列表格式错误"}), 400
+    if action not in {"approve", "reject"}:
+        return jsonify({"message": "审核动作不合法"}), 400
+
+    db = get_db()
+    placeholders = ",".join("?" for _ in ids)
+    rows = db.execute(
+        f"SELECT id, user_name, status FROM reviews WHERE id IN ({placeholders})",
+        tuple(ids),
+    ).fetchall()
+    row_map = {int(r["id"]): r for r in rows}
+
+    done = 0
+    skipped: list[dict[str, Any]] = []
+    for rid in ids:
+        row = row_map.get(rid)
+        if row is None:
+            skipped.append({"id": rid, "reason": "评价不存在"})
+            continue
+        if row["status"] != "pending":
+            skipped.append({"id": rid, "reason": "评价不是待审核状态"})
+            continue
+
+        next_status = "approved" if action == "approve" else "rejected"
+        db.execute(
+            "UPDATE reviews SET status = ?, updated_at = datetime('now', 'localtime') WHERE id = ?",
+            (next_status, rid),
+        )
+        add_audit_log(
+            db,
+            entity_type="review",
+            entity_id=rid,
+            action=f"batch_{action}",
+            operator_name=admin_user["username"],
+            detail=f"review_id={rid}",
+        )
+        title = "评价审核通过" if action == "approve" else "评价审核驳回"
+        content = "您的评价已通过审核并对外展示。" if action == "approve" else f"您的评价（ID: {rid}）未通过审核。"
+        create_notification(
+            db,
+            username=row["user_name"],
+            role="user",
+            title=title,
+            content=content,
+            related_type="review",
+            related_id=rid,
+        )
+        done += 1
+
+    db.commit()
+    return jsonify({"message": f"批量审核完成，成功 {done} 条，跳过 {len(skipped)} 条", "done": done, "skipped": skipped})
 
 
 @app.delete("/api/admin/reviews/<int:review_id>")
@@ -1146,7 +1749,7 @@ def delete_review(review_id: int) -> Any:
         return err
 
     db = get_db()
-    row = db.execute("SELECT id FROM reviews WHERE id = ?", (review_id,)).fetchone()
+    row = db.execute("SELECT id, user_name FROM reviews WHERE id = ?", (review_id,)).fetchone()
     if row is None:
         return jsonify({"message": "评价不存在"}), 404
 
@@ -1159,8 +1762,232 @@ def delete_review(review_id: int) -> Any:
         operator_name=admin_user["username"],
         detail=f"review_id={review_id}",
     )
+    create_notification(
+        db,
+        username=row["user_name"],
+        role="user",
+        title="评价已删除",
+        content="您的评价已被管理员删除。",
+        related_type="review",
+        related_id=review_id,
+    )
     db.commit()
-    return jsonify({"message": "评价已删除"})
+    return jsonify({"message": "删除成功"})
+
+
+@app.get("/api/admin/stalls")
+def list_admin_stalls() -> Any:
+    _, err = require_role({"admin"})
+    if err is not None:
+        return err
+
+    status = str(request.args.get("status", "")).strip()
+    category = str(request.args.get("category", "")).strip()
+    q = str(request.args.get("q", "")).strip()
+    page, page_size, offset = parse_pagination(default_page_size=20, max_page_size=100)
+    db = get_db()
+
+    sql = """
+        SELECT id, name, category, description, image_url, open_time, lng, lat, heat, status, merchant_name,
+               is_open, live_lng, live_lat, live_updated_at,
+               CASE WHEN is_open = 1 THEN '营业中' ELSE '休息中' END AS business_status
+        FROM stalls
+        WHERE 1=1
+    """
+    params: list[Any] = []
+    if status:
+        sql += " AND status = ?"
+        params.append(status)
+    if category:
+        sql += " AND category = ?"
+        params.append(category)
+    if q:
+        sql += " AND (name LIKE ? OR merchant_name LIKE ? OR description LIKE ?)"
+        like_q = f"%{q}%"
+        params.extend([like_q, like_q, like_q])
+
+    count_row = db.execute(f"SELECT COUNT(*) FROM ({sql})", tuple(params)).fetchone()
+    total = int(count_row[0]) if count_row else 0
+    sql += " ORDER BY id DESC LIMIT ? OFFSET ?"
+    params.extend([page_size, offset])
+    rows = db.execute(sql, tuple(params)).fetchall()
+    return jsonify(make_paginated_result([dict(r) for r in rows], total, page, page_size))
+
+
+@app.post("/api/admin/stalls/<int:stall_id>/offline")
+def offline_stall(stall_id: int) -> Any:
+    admin_user, err = require_role({"admin"})
+    if err is not None:
+        return err
+
+    db = get_db()
+    row = db.execute(
+        "SELECT id, name, merchant_name, status FROM stalls WHERE id = ?",
+        (stall_id,),
+    ).fetchone()
+    if row is None:
+        return jsonify({"message": "摊位不存在"}), 404
+    if row["status"] == "offline":
+        return jsonify({"message": "摊位已是下架状态"}), 400
+
+    db.execute("UPDATE stalls SET status = 'offline' WHERE id = ?", (stall_id,))
+    add_audit_log(
+        db,
+        entity_type="stall",
+        entity_id=stall_id,
+        action="offline",
+        operator_name=admin_user["username"],
+        detail=f"stall={row['name']}",
+    )
+    create_notification(
+        db,
+        username=row["merchant_name"],
+        role="merchant",
+        title="摊位已下架",
+        content=f"您的摊位「{row['name']}」已被管理员下架。",
+        related_type="stall",
+        related_id=stall_id,
+    )
+    db.commit()
+    return jsonify({"message": "下架成功"})
+
+
+@app.post("/api/admin/stalls/<int:stall_id>/restore")
+def restore_stall(stall_id: int) -> Any:
+    admin_user, err = require_role({"admin"})
+    if err is not None:
+        return err
+
+    db = get_db()
+    row = db.execute(
+        "SELECT id, name, merchant_name, status FROM stalls WHERE id = ?",
+        (stall_id,),
+    ).fetchone()
+    if row is None:
+        return jsonify({"message": "摊位不存在"}), 404
+
+    db.execute("UPDATE stalls SET status = 'approved' WHERE id = ?", (stall_id,))
+    add_audit_log(
+        db,
+        entity_type="stall",
+        entity_id=stall_id,
+        action="restore",
+        operator_name=admin_user["username"],
+        detail=f"stall={row['name']}",
+    )
+    create_notification(
+        db,
+        username=row["merchant_name"],
+        role="merchant",
+        title="摊位已恢复",
+        content=f"您的摊位「{row['name']}」已恢复上架。",
+        related_type="stall",
+        related_id=stall_id,
+    )
+    db.commit()
+    return jsonify({"message": "恢复成功"})
+
+
+@app.delete("/api/admin/stalls/<int:stall_id>")
+def delete_stall(stall_id: int) -> Any:
+    admin_user, err = require_role({"admin"})
+    if err is not None:
+        return err
+
+    db = get_db()
+    row = db.execute(
+        "SELECT id, name, merchant_name FROM stalls WHERE id = ?",
+        (stall_id,),
+    ).fetchone()
+    if row is None:
+        return jsonify({"message": "摊位不存在"}), 404
+
+    review_ids = db.execute("SELECT id FROM reviews WHERE stall_id = ?", (stall_id,)).fetchall()
+    if review_ids:
+        placeholders = ",".join("?" for _ in review_ids)
+        rid_values = tuple(int(x["id"]) for x in review_ids)
+        db.execute(f"DELETE FROM review_replies WHERE review_id IN ({placeholders})", rid_values)
+    db.execute("DELETE FROM reviews WHERE stall_id = ?", (stall_id,))
+    db.execute("DELETE FROM stalls WHERE id = ?", (stall_id,))
+    add_audit_log(
+        db,
+        entity_type="stall",
+        entity_id=stall_id,
+        action="delete",
+        operator_name=admin_user["username"],
+        detail=f"stall={row['name']}",
+    )
+    create_notification(
+        db,
+        username=row["merchant_name"],
+        role="merchant",
+        title="摊位已删除",
+        content=f"您的摊位「{row['name']}」已被管理员删除。",
+        related_type="stall",
+        related_id=stall_id,
+    )
+    db.commit()
+    return jsonify({"message": "删除成功"})
+
+
+@app.get("/api/notifications")
+def list_notifications() -> Any:
+    user, err = require_role({"user", "merchant"})
+    if err is not None:
+        return err
+
+    unread_only = str(request.args.get("unread_only", "")).strip() == "1"
+    page, page_size, offset = parse_pagination(default_page_size=20, max_page_size=100)
+    db = get_db()
+
+    sql = """
+        SELECT id, username, role, title, content, related_type, related_id, is_read, created_at
+        FROM notifications
+        WHERE username = ? AND role = ?
+    """
+    params: list[Any] = [user["username"], user["role"]]
+    if unread_only:
+        sql += " AND is_read = 0"
+
+    count_row = db.execute(f"SELECT COUNT(*) FROM ({sql})", tuple(params)).fetchone()
+    total = int(count_row[0]) if count_row else 0
+    sql += " ORDER BY id DESC LIMIT ? OFFSET ?"
+    params.extend([page_size, offset])
+    rows = db.execute(sql, tuple(params)).fetchall()
+    return jsonify(make_paginated_result([dict(r) for r in rows], total, page, page_size))
+
+
+@app.post("/api/notifications/<int:notification_id>/read")
+def mark_notification_read(notification_id: int) -> Any:
+    user, err = require_role({"user", "merchant"})
+    if err is not None:
+        return err
+
+    db = get_db()
+    row = db.execute(
+        "SELECT id FROM notifications WHERE id = ? AND username = ? AND role = ?",
+        (notification_id, user["username"], user["role"]),
+    ).fetchone()
+    if row is None:
+        return jsonify({"message": "通知不存在"}), 404
+    db.execute("UPDATE notifications SET is_read = 1 WHERE id = ?", (notification_id,))
+    db.commit()
+    return jsonify({"message": "已标记为已读"})
+
+
+@app.post("/api/notifications/read-all")
+def mark_all_notifications_read() -> Any:
+    user, err = require_role({"user", "merchant"})
+    if err is not None:
+        return err
+
+    db = get_db()
+    db.execute(
+        "UPDATE notifications SET is_read = 1 WHERE username = ? AND role = ? AND is_read = 0",
+        (user["username"], user["role"]),
+    )
+    db.commit()
+    return jsonify({"message": "全部标记为已读"})
 
 
 @app.get("/api/admin/audit-logs")
@@ -1195,3 +2022,7 @@ def list_admin_audit_logs() -> Any:
 if __name__ == "__main__":
     init_db()
     app.run(host="127.0.0.1", port=5000, debug=True)
+
+
+
+

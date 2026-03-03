@@ -11,6 +11,7 @@
     <header class="topbar">
       <h1>用户端</h1>
       <div>
+        <a class="nav-btn notif-btn" href="./notifications.html?role=user"><span>消息中心</span><span id="notificationDot" class="notif-dot hidden"></span></a>
         <button id="refreshBtn">刷新数据</button>
         <button id="toggleHeatBtn">切换热力图</button>
         <button id="logoutBtn">退出登录</button>
@@ -18,7 +19,41 @@
     </header>
 
     <main class="page grid-two">
-      <section id="map" class="map-box"></section>
+      <section>
+        <section id="map" class="map-box"></section>
+        <section class="card">
+          <h2>发现摊位</h2>
+          <div class="inline-form">
+            <input id="discoverSearchInput" type="text" placeholder="搜索摊位名/类别/简介" />
+            <select id="discoverCategoryFilter">
+              <option value="">全部类别</option>
+            </select>
+            <select id="discoverMinRatingFilter">
+              <option value="">最低评分</option>
+              <option value="4.5">4.5+</option>
+              <option value="4">4.0+</option>
+              <option value="3.5">3.5+</option>
+              <option value="3">3.0+</option>
+            </select>
+            <select id="discoverSortSelect">
+              <option value="id_asc">默认排序</option>
+              <option value="rating_desc">评分优先</option>
+              <option value="distance_asc">距离优先</option>
+            </select>
+          </div>
+          <div class="inline-form">
+            <input id="discoverDistanceInput" type="number" min="0.1" step="0.1" placeholder="最大距离(km)" />
+            <button id="applyDiscoverBtn">应用筛选</button>
+            <button id="clearDiscoverBtn">清空筛选</button>
+          </div>
+          <ul id="discoverList" class="list"></ul>
+          <div class="inline-form">
+            <button id="discoverPrevPageBtn" type="button">上一页</button>
+            <span id="discoverPageInfo" class="hint"></span>
+            <button id="discoverNextPageBtn" type="button">下一页</button>
+          </div>
+        </section>
+      </section>
 
       <section class="card side-panel">
         <h2 id="selectedStallTitle">请先点击地图上的摊位</h2>

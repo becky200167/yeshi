@@ -18,6 +18,7 @@ const markerById = new Map();
 const HIDE_MARKERS_ZOOM = 14;
 const DISCOVER_PAGE_SIZE = 20;
 const MAP_FETCH_PAGE_SIZE = 100;
+const MAX_IMAGE_COUNT = 8;
 
 const reviewList = document.getElementById("reviewList");
 const reviewMsg = document.getElementById("reviewMsg");
@@ -29,6 +30,28 @@ const reviewModalTitle = document.getElementById("reviewModalTitle");
 const reviewStallIdInput = document.getElementById("reviewStallId");
 const discoverPageInfo = document.getElementById("discoverPageInfo");
 const notificationDot = document.getElementById("notificationDot");
+const submissionModal = document.getElementById("submissionModal");
+const submissionMsg = document.getElementById("submissionMsg");
+const createSubmissionSection = document.getElementById("createSubmissionSection");
+const correctionSubmissionSection = document.getElementById("correctionSubmissionSection");
+const correctionStallSelect = document.getElementById("correctionStallSelect");
+const correctionModeSelect = document.getElementById("correctionModeSelect");
+const correctionFullFields = document.getElementById("correctionFullFields");
+const correctionPatchFields = document.getElementById("correctionPatchFields");
+const createMapPickBtn = document.getElementById("createMapPickBtn");
+const correctionFullMapPickBtn = document.getElementById("correctionFullMapPickBtn");
+const correctionPatchMapPickBtn = document.getElementById("correctionPatchMapPickBtn");
+const locationPickerModal = document.getElementById("locationPickerModal");
+const locationPickerMsg = document.getElementById("locationPickerMsg");
+const locationPickerSearchInput = document.getElementById("locationPickerSearchInput");
+const locationPickerSearchBtn = document.getElementById("locationPickerSearchBtn");
+const locationPickerLocateBtn = document.getElementById("locationPickerLocateBtn");
+const locationPickerConfirmBtn = document.getElementById("locationPickerConfirmBtn");
+const locationPickerCancelBtn = document.getElementById("locationPickerCancelBtn");
+let submissionLocationContext = "";
+let pickerMap = null;
+let popupLocationPicker = null;
+let pendingPickedPoint = null;
 
 function businessStatusText(stall) {
   return Number(stall?.is_open) === 1 ? "营业中" : "休息中";
@@ -56,6 +79,9 @@ function primaryImageUrl(imageValue) {
 }
 
 function renderImageGallery(imageValue, cls = "stall-thumb") {
+  if (typeof renderZoomableImageGallery === "function") {
+    return renderZoomableImageGallery(imageValue, cls, { emptyText: "" });
+  }
   const urls = parseImageUrls(imageValue);
   if (urls.length === 0) return "";
   return `
@@ -63,6 +89,15 @@ function renderImageGallery(imageValue, cls = "stall-thumb") {
       ${urls.map((u) => `<img src="${escapeHtml(u)}" alt="摊位图片" class="${cls}" />`).join("")}
     </div>
   `;
+}
+
+function renderDiscoverThumbnail(imageValue) {
+  if (typeof renderZoomableCoverImage === "function") {
+    return renderZoomableCoverImage(imageValue, "discover-thumb", { emptyText: "暂无配图" });
+  }
+  const url = primaryImageUrl(imageValue);
+  if (!url) return '<div class="discover-thumb-empty">暂无配图</div>';
+  return `<img src="${escapeHtml(url)}" alt="摊位图片" class="discover-thumb" />`;
 }
 
 function setNotificationDotVisible(visible) {
@@ -74,6 +109,133 @@ async function updateNotificationDot() {
   const data = await apiFetch("/api/notifications?unread_only=1&page=1&page_size=1", {}, auth.token);
   const { pagination } = unwrapItems(data);
   setNotificationDotVisible((pagination?.total || 0) > 0);
+}
+
+function setSubmissionMsg(text) {
+  if (!submissionMsg) return;
+  submissionMsg.textContent = text;
+}
+
+function setSubmissionLocationContext(next) {
+  submissionLocationContext = String(next || "");
+}
+
+function setLocationPickerMsg(text) {
+  if (!locationPickerMsg) return;
+  locationPickerMsg.textContent = text;
+}
+
+function ensurePatchLngLatChecked() {
+  const lngCheckbox = correctionPatchFields.querySelector("input[data-patch-key='lng']");
+  const latCheckbox = correctionPatchFields.querySelector("input[data-patch-key='lat']");
+  if (lngCheckbox) lngCheckbox.checked = true;
+  if (latCheckbox) latCheckbox.checked = true;
+}
+
+function applyPickedLocationByContext(lat, lng) {
+  const latText = Number(lat).toFixed(6);
+  const lngText = Number(lng).toFixed(6);
+
+  if (!submissionModal || submissionModal.classList.contains("hidden")) return;
+
+  if (submissionLocationContext === "create") {
+    document.getElementById("createLatInput").value = latText;
+    document.getElementById("createLngInput").value = lngText;
+    return;
+  }
+
+  if (submissionLocationContext === "correction_full") {
+    const form = document.getElementById("userCorrectionForm");
+    form.elements.lat.value = latText;
+    form.elements.lng.value = lngText;
+    return;
+  }
+
+  if (submissionLocationContext === "correction_patch") {
+    ensurePatchLngLatChecked();
+    document.getElementById("patch_lat").value = latText;
+    document.getElementById("patch_lng").value = lngText;
+  }
+}
+
+function getCurrentPointForContext(context) {
+  if (context === "create") {
+    const lat = Number(document.getElementById("createLatInput").value);
+    const lng = Number(document.getElementById("createLngInput").value);
+    if (Number.isFinite(lat) && Number.isFinite(lng)) return { lat, lng };
+  }
+  if (context === "correction_full") {
+    const form = document.getElementById("userCorrectionForm");
+    const lat = Number(form.elements.lat.value);
+    const lng = Number(form.elements.lng.value);
+    if (Number.isFinite(lat) && Number.isFinite(lng)) return { lat, lng };
+  }
+  if (context === "correction_patch") {
+    const lat = Number(document.getElementById("patch_lat").value);
+    const lng = Number(document.getElementById("patch_lng").value);
+    if (Number.isFinite(lat) && Number.isFinite(lng)) return { lat, lng };
+  }
+  const center = map.getCenter();
+  return { lat: Number(center.lat), lng: Number(center.lng) };
+}
+
+function ensurePopupLocationPicker() {
+  if (popupLocationPicker) return;
+  pickerMap = L.map("locationPickerMap").setView([28.21, 113.0], 12);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19,
+    attribution: "&copy; OpenStreetMap",
+  }).addTo(pickerMap);
+
+  popupLocationPicker = createLocationPicker({
+    map: pickerMap,
+    markerPopupText: "当前选点",
+    onPointSelected(lat, lng) {
+      pendingPickedPoint = { lat, lng };
+    },
+    onMessage(text) {
+      setLocationPickerMsg(text);
+    },
+  });
+  popupLocationPicker.bindMapClick();
+}
+
+function openLocationPicker(context) {
+  setSubmissionLocationContext(context);
+  ensurePopupLocationPicker();
+  locationPickerModal.classList.remove("hidden");
+  const current = getCurrentPointForContext(context);
+  pendingPickedPoint = { lat: current.lat, lng: current.lng };
+  popupLocationPicker.setPoint(current.lat, current.lng, "init", { showMessage: "", panTo: true });
+  setLocationPickerMsg("可点击地图、搜索定位或使用当前定位");
+  setTimeout(() => {
+    pickerMap.invalidateSize();
+  }, 0);
+}
+
+function closeLocationPicker() {
+  locationPickerModal.classList.add("hidden");
+}
+
+async function uploadImages(fileList) {
+  const files = Array.from(fileList || []);
+  if (files.length === 0) return "";
+  if (files.length > MAX_IMAGE_COUNT) {
+    throw new Error(`最多可上传 ${MAX_IMAGE_COUNT} 张图片`);
+  }
+
+  const formData = new FormData();
+  files.forEach((file) => formData.append("images", file));
+  const data = await apiFetch(
+    "/api/uploads/images",
+    {
+      method: "POST",
+      body: formData,
+    },
+    auth.token,
+  );
+  const urls = Array.isArray(data.urls) ? data.urls : [];
+  return urls.length > 0 ? JSON.stringify(urls) : "";
 }
 
 function getStallById(stallId) {
@@ -138,12 +300,16 @@ function renderDiscoverList(items) {
     const li = document.createElement("li");
     li.className = "list-item";
     li.setAttribute("data-stall-id", String(s.id));
+    li.classList.add("discover-list-item");
     li.innerHTML = `
-      <div><strong>#${s.id} ${escapeHtml(s.name)}</strong> (${escapeHtml(s.category)})</div>
-      <div>营业状态: ${escapeHtml(businessStatusText(s))}</div>
-      <div>评分: ${Number(s.avg_rating || 0).toFixed(1)} (${s.review_count || 0} 条)</div>
-      ${s.distance_km !== null && s.distance_km !== undefined ? `<div>距离: ${s.distance_km} km</div>` : ""}
-      <div class="hint">${escapeHtml(s.open_time)}</div>
+      <div class="discover-thumb-wrap">${renderDiscoverThumbnail(s.image_url)}</div>
+      <div>
+        <div><strong>#${s.id} ${escapeHtml(s.name)}</strong> (${escapeHtml(s.category)})</div>
+        <div>营业状态: ${escapeHtml(businessStatusText(s))}</div>
+        <div>评分: ${Number(s.avg_rating || 0).toFixed(1)} (${s.review_count || 0} 条)</div>
+        ${s.distance_km !== null && s.distance_km !== undefined ? `<div>距离: ${s.distance_km} km</div>` : ""}
+        <div class="hint">${escapeHtml(s.open_time)}</div>
+      </div>
     `;
     li.addEventListener("click", async () => {
       const marker = markerById.get(Number(s.id));
@@ -153,6 +319,9 @@ function renderDiscoverList(items) {
       }
       setSelectedStall(s.id);
       await loadReviews(s.id);
+    });
+    li.querySelector(".discover-thumb-wrap")?.addEventListener("click", (event) => {
+      event.stopPropagation();
     });
     list.appendChild(li);
   });
@@ -405,6 +574,137 @@ function closeReviewModal() {
   reviewModal.classList.add("hidden");
 }
 
+function openSubmissionModal() {
+  submissionModal.classList.remove("hidden");
+  showSubmissionSection("create");
+  setSubmissionLocationContext("create");
+  renderCorrectionStallOptions();
+  setSubmissionMsg("提示：在地图上点击位置可自动填入新增摊位经纬度");
+}
+
+function closeSubmissionModal() {
+  closeLocationPicker();
+  setSubmissionLocationContext("");
+  submissionModal.classList.add("hidden");
+}
+
+function showSubmissionSection(type) {
+  if (type === "correction") {
+    createSubmissionSection.classList.add("hidden");
+    correctionSubmissionSection.classList.remove("hidden");
+    setSubmissionLocationContext(correctionModeSelect.value === "patch" ? "correction_patch" : "correction_full");
+  } else {
+    correctionSubmissionSection.classList.add("hidden");
+    createSubmissionSection.classList.remove("hidden");
+    setSubmissionLocationContext("create");
+  }
+}
+
+function renderCorrectionStallOptions() {
+  correctionStallSelect.innerHTML = "";
+  if (!Array.isArray(stalls) || stalls.length === 0) {
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = "暂无可勘误摊位";
+    correctionStallSelect.appendChild(opt);
+    correctionStallSelect.disabled = true;
+    return;
+  }
+
+  correctionStallSelect.disabled = false;
+  stalls.forEach((stall) => {
+    const opt = document.createElement("option");
+    opt.value = String(stall.id);
+    opt.textContent = `#${stall.id} ${stall.name}`;
+    correctionStallSelect.appendChild(opt);
+  });
+  if (selectedStallId) correctionStallSelect.value = String(selectedStallId);
+  fillCorrectionFormBySelectedStall();
+}
+
+function setCorrectionMode(mode) {
+  const finalMode = mode === "patch" ? "patch" : "full";
+  correctionModeSelect.value = finalMode;
+  correctionFullFields.classList.toggle("hidden", finalMode !== "full");
+  correctionPatchFields.classList.toggle("hidden", finalMode !== "patch");
+  if (!correctionSubmissionSection.classList.contains("hidden")) {
+    setSubmissionLocationContext(finalMode === "patch" ? "correction_patch" : "correction_full");
+  }
+  correctionFullFields.querySelectorAll("input, textarea, select").forEach((el) => {
+    if (finalMode === "full") {
+      if (el.name === "name" || el.name === "category" || el.name === "open_time" || el.name === "lng" || el.name === "lat") {
+        el.setAttribute("required", "required");
+      }
+      el.disabled = false;
+    } else {
+      el.removeAttribute("required");
+      el.disabled = true;
+    }
+  });
+  correctionPatchFields.querySelectorAll("input, textarea, select").forEach((el) => {
+    el.disabled = finalMode !== "patch";
+  });
+}
+
+function fillCorrectionFormBySelectedStall() {
+  const stallId = Number(correctionStallSelect.value);
+  const stall = getStallById(stallId);
+  if (!stall) return;
+
+  const form = document.getElementById("userCorrectionForm");
+  form.elements.name.value = stall.name || "";
+  form.elements.category.value = stall.category || "";
+  form.elements.open_time.value = stall.open_time || "";
+  form.elements.lng.value = stall.lng ?? "";
+  form.elements.lat.value = stall.lat ?? "";
+  form.elements.heat.value = stall.heat ?? "";
+  form.elements.description.value = stall.description || "";
+
+  document.getElementById("patch_name").value = stall.name || "";
+  document.getElementById("patch_category").value = stall.category || "";
+  document.getElementById("patch_open_time").value = stall.open_time || "";
+  document.getElementById("patch_lng").value = stall.lng ?? "";
+  document.getElementById("patch_lat").value = stall.lat ?? "";
+  document.getElementById("patch_heat").value = stall.heat ?? "";
+  document.getElementById("patch_description").value = stall.description || "";
+  correctionPatchFields.querySelectorAll("input[type='checkbox'][data-patch-key]").forEach((node) => {
+    node.checked = false;
+  });
+}
+
+function collectPatchChangePayload() {
+  const checkedKeys = Array.from(
+    correctionPatchFields.querySelectorAll("input[type='checkbox'][data-patch-key]:checked"),
+  ).map((x) => x.getAttribute("data-patch-key"));
+  if (checkedKeys.length === 0) {
+    throw new Error("请至少勾选一个勘误字段");
+  }
+
+  const payload = {};
+  checkedKeys.forEach((key) => {
+    if (key === "name") payload.name = String(document.getElementById("patch_name").value || "").trim();
+    if (key === "category") payload.category = String(document.getElementById("patch_category").value || "").trim();
+    if (key === "open_time") payload.open_time = String(document.getElementById("patch_open_time").value || "").trim();
+    if (key === "lng") {
+      const raw = String(document.getElementById("patch_lng").value || "").trim();
+      if (!raw) throw new Error("请填写经度新值");
+      payload.lng = Number(raw);
+    }
+    if (key === "lat") {
+      const raw = String(document.getElementById("patch_lat").value || "").trim();
+      if (!raw) throw new Error("请填写纬度新值");
+      payload.lat = Number(raw);
+    }
+    if (key === "heat") {
+      const raw = String(document.getElementById("patch_heat").value || "").trim();
+      if (!raw) throw new Error("请填写热度新值");
+      payload.heat = Number(raw);
+    }
+    if (key === "description") payload.description = String(document.getElementById("patch_description").value || "").trim();
+  });
+  return payload;
+}
+
 window.userViewReviews = async function userViewReviews(stallId) {
   await loadReviews(stallId);
 };
@@ -445,6 +745,157 @@ document.getElementById("reviewForm").addEventListener("submit", async (e) => {
 document.getElementById("closeReviewModalBtn").addEventListener("click", closeReviewModal);
 reviewModal.addEventListener("click", (e) => {
   if (e.target === reviewModal) closeReviewModal();
+});
+
+document.getElementById("openSubmissionModalBtn").addEventListener("click", () => {
+  openSubmissionModal();
+});
+document.getElementById("closeSubmissionModalBtn").addEventListener("click", () => {
+  closeSubmissionModal();
+});
+document.getElementById("showCreateFormBtn").addEventListener("click", () => {
+  showSubmissionSection("create");
+  setSubmissionMsg("提示：在地图上点击位置可自动填入新增摊位经纬度");
+});
+document.getElementById("showCorrectionFormBtn").addEventListener("click", () => {
+  showSubmissionSection("correction");
+  setCorrectionMode(correctionModeSelect.value);
+  setSubmissionMsg("请选择目标摊位并提交勘误");
+});
+submissionModal.addEventListener("click", (e) => {
+  if (e.target === submissionModal) closeSubmissionModal();
+});
+correctionStallSelect.addEventListener("change", () => {
+  fillCorrectionFormBySelectedStall();
+});
+correctionModeSelect.addEventListener("change", () => {
+  setCorrectionMode(correctionModeSelect.value);
+});
+createMapPickBtn.addEventListener("click", () => {
+  openLocationPicker("create");
+});
+correctionFullMapPickBtn.addEventListener("click", () => {
+  showSubmissionSection("correction");
+  setCorrectionMode("full");
+  openLocationPicker("correction_full");
+});
+correctionPatchMapPickBtn.addEventListener("click", () => {
+  showSubmissionSection("correction");
+  setCorrectionMode("patch");
+  openLocationPicker("correction_patch");
+});
+locationPickerSearchBtn.addEventListener("click", async () => {
+  await popupLocationPicker.search(locationPickerSearchInput.value);
+});
+locationPickerLocateBtn.addEventListener("click", async () => {
+  await popupLocationPicker.useCurrentLocation();
+});
+locationPickerConfirmBtn.addEventListener("click", () => {
+  if (!pendingPickedPoint) {
+    setLocationPickerMsg("请先在地图上选择位置");
+    return;
+  }
+  applyPickedLocationByContext(pendingPickedPoint.lat, pendingPickedPoint.lng);
+  closeLocationPicker();
+  setSubmissionMsg("已填充经纬度");
+});
+locationPickerCancelBtn.addEventListener("click", () => {
+  closeLocationPicker();
+});
+locationPickerModal.addEventListener("click", (e) => {
+  if (e.target === locationPickerModal) closeLocationPicker();
+});
+
+document.getElementById("userCreateSubmissionForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  try {
+    const form = new FormData(e.target);
+    const imagePayload = await uploadImages(document.getElementById("createImageFilesInput")?.files);
+    const payload = {
+      name: String(form.get("name") || "").trim(),
+      category: String(form.get("category") || "").trim(),
+      open_time: String(form.get("open_time") || "").trim(),
+      image_url: imagePayload,
+      lng: Number(form.get("lng")),
+      lat: Number(form.get("lat")),
+      description: String(form.get("description") || "").trim(),
+    };
+    const result = await apiFetch(
+      "/api/user/stalls",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      },
+      auth.token,
+    );
+    setSubmissionMsg(result.message || "新增摊位报送成功");
+    e.target.reset();
+    await updateNotificationDot();
+  } catch (error) {
+    setSubmissionMsg(error.message);
+  }
+});
+
+document.getElementById("userCorrectionForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  try {
+    const form = new FormData(e.target);
+    const stallId = Number(form.get("stall_id"));
+    const mode = String(form.get("submission_mode") || "full");
+    const changeNote = String(form.get("change_note") || "").trim();
+    if (!stallId) throw new Error("请选择目标摊位");
+    if (!changeNote) throw new Error("请填写勘误说明");
+
+    let payload = {
+      submission_mode: mode,
+      change_note: changeNote,
+    };
+    if (mode === "patch") {
+      const changes = collectPatchChangePayload();
+      const patchImageChecked = correctionPatchFields.querySelector("input[data-patch-key='image_url']")?.checked;
+      if (patchImageChecked) {
+        const imagePayload = await uploadImages(document.getElementById("patchImageFilesInput")?.files);
+        if (!imagePayload) throw new Error("已勾选图片字段，请至少上传一张图片");
+        changes.image_url = imagePayload;
+      }
+      payload = { ...payload, change_payload: changes };
+    } else {
+      let imagePayload = "";
+      const fullImageFiles = document.getElementById("correctionFullImageFilesInput")?.files;
+      if (fullImageFiles && fullImageFiles.length > 0) {
+        imagePayload = await uploadImages(fullImageFiles);
+      } else {
+        imagePayload = getStallById(stallId)?.image_url || "";
+      }
+      payload = {
+        ...payload,
+        name: String(form.get("name") || "").trim(),
+        category: String(form.get("category") || "").trim(),
+        open_time: String(form.get("open_time") || "").trim(),
+        lng: Number(form.get("lng")),
+        lat: Number(form.get("lat")),
+        description: String(form.get("description") || "").trim(),
+        image_url: imagePayload,
+      };
+      const heatRaw = String(form.get("heat") || "").trim();
+      if (heatRaw) payload.heat = Number(heatRaw);
+    }
+
+    const result = await apiFetch(
+      `/api/user/stalls/${stallId}/corrections`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      },
+      auth.token,
+    );
+    setSubmissionMsg(result.message || "勘误提交成功");
+    await updateNotificationDot();
+  } catch (error) {
+    setSubmissionMsg(error.message);
+  }
 });
 
 document.getElementById("loadReviewsBtn").addEventListener("click", async () => {
@@ -500,6 +951,7 @@ map.on("zoomend", updateMarkerVisibility);
   await loadStalls();
   await loadHeatmap();
   await updateNotificationDot();
+  setCorrectionMode("full");
   setInterval(() => {
     updateNotificationDot().catch(() => {});
   }, 30000);

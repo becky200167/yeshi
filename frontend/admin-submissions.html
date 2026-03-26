@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>摊位审核</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
@@ -29,6 +30,16 @@
             <option value="rejected">已驳回</option>
             <option value="">全部</option>
           </select>
+          <select id="submissionRoleFilter">
+            <option value="">全部提交人</option>
+            <option value="user">普通用户</option>
+            <option value="merchant">商户</option>
+          </select>
+          <select id="submissionModeFilter">
+            <option value="">全部模式</option>
+            <option value="full">完整信息</option>
+            <option value="patch">仅改动字段</option>
+          </select>
           <input id="submissionSearchInput" type="text" placeholder="关键词：摊位名/商户/类别" />
           <button id="submissionSearchBtn" type="button">搜索</button>
           <button id="loadPendingBtn" type="button">刷新提交记录</button>
@@ -48,7 +59,40 @@
       <p id="adminMsg" class="hint"></p>
     </main>
 
+    <div id="adminStallPreviewModal" class="modal hidden">
+      <div class="modal-card modal-card-admin-preview">
+        <div class="admin-preview-toolbar">
+          <div>
+            <h3 id="adminPreviewHeading">摊位预览</h3>
+            <p id="adminPreviewContext" class="hint"></p>
+          </div>
+          <button id="adminPreviewCloseBtn" type="button">关闭</button>
+        </div>
+        <p id="adminPreviewNotice" class="hint preview-notice"></p>
+        <div id="adminPreviewActions" class="admin-preview-actions"></div>
+        <div class="grid-two admin-preview-grid">
+          <section>
+            <div id="adminPreviewMap" class="map-box map-mid"></div>
+            <section class="card">
+              <h2 id="adminPreviewTitle">正在加载...</h2>
+              <div id="adminPreviewDetail" class="hint">正在加载摊位详情</div>
+            </section>
+          </section>
+          <section class="card side-panel">
+            <h2>管理员上下文</h2>
+            <div id="adminPreviewMeta" class="hint"></div>
+            <p id="adminPreviewReviewSummary" class="hint">暂无评价数据</p>
+            <h3>摊位评价</h3>
+            <ul id="adminPreviewReviewsList" class="list"></ul>
+          </section>
+        </div>
+      </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="./auth.js"></script>
+    <script src="./image-viewer.js"></script>
+    <script src="./admin-stall-preview.js"></script>
     <script src="./admin-submissions.js"></script>
   </body>
 </html>

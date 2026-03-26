@@ -20,7 +20,18 @@ const selectedStallDetail = document.getElementById("selectedStallDetail");
 const merchantMsg = document.getElementById("merchantMsg");
 const notificationDot = document.getElementById("notificationDot");
 const editStallModal = document.getElementById("editStallModal");
+const openEditLocationPickerBtn = document.getElementById("openEditLocationPickerBtn");
+const editLocationPickerModal = document.getElementById("editLocationPickerModal");
+const editLocationPickerMsg = document.getElementById("editLocationPickerMsg");
+const editLocationPickerSearchInput = document.getElementById("editLocationPickerSearchInput");
+const editLocationPickerSearchBtn = document.getElementById("editLocationPickerSearchBtn");
+const editLocationPickerLocateBtn = document.getElementById("editLocationPickerLocateBtn");
+const editLocationPickerConfirmBtn = document.getElementById("editLocationPickerConfirmBtn");
+const editLocationPickerCancelBtn = document.getElementById("editLocationPickerCancelBtn");
 const MAX_IMAGE_COUNT = 8;
+let editPickerMap = null;
+let editPopupLocationPicker = null;
+let editPendingPoint = null;
 
 function businessStatusText(stall) {
   return Number(stall?.is_open) === 1 ? "营业中" : "休息中";
@@ -48,11 +59,14 @@ function primaryImageUrl(imageValue) {
 }
 
 function renderImageGallery(imageValue) {
+  if (typeof renderZoomableImageGallery === "function") {
+    return renderZoomableImageGallery(imageValue, "stall-thumb", { emptyText: "" });
+  }
   const urls = parseImageUrls(imageValue);
   if (urls.length === 0) return "";
   return `
     <div class="image-grid">
-      ${urls.map((u) => `<img src="${escapeHtml(u)}" alt="鎽婁綅鍥剧墖" class="stall-thumb" />`).join("")}
+      ${urls.map((u) => `<img src="${escapeHtml(u)}" alt="摊位图片" class="stall-thumb" />`).join("")}
     </div>
   `;
 }
@@ -81,6 +95,50 @@ function setMsg(text) {
   merchantMsg.textContent = text;
 }
 
+function setEditLocationPickerMsg(text) {
+  editLocationPickerMsg.textContent = text;
+}
+
+function ensureEditLocationPicker() {
+  if (editPopupLocationPicker) return;
+  editPickerMap = L.map("editLocationPickerMap").setView([28.21, 113.0], 12);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19,
+    attribution: "&copy; OpenStreetMap",
+  }).addTo(editPickerMap);
+
+  editPopupLocationPicker = createLocationPicker({
+    map: editPickerMap,
+    markerPopupText: "当前选点",
+    onPointSelected(lat, lng) {
+      editPendingPoint = { lat, lng };
+    },
+    onMessage(text) {
+      setEditLocationPickerMsg(text);
+    },
+  });
+  editPopupLocationPicker.bindMapClick();
+}
+
+function openEditLocationPicker() {
+  ensureEditLocationPicker();
+  editLocationPickerModal.classList.remove("hidden");
+  const form = document.getElementById("editStallForm");
+  const lat = Number(form.elements.lat.value);
+  const lng = Number(form.elements.lng.value);
+  const center = Number.isFinite(lat) && Number.isFinite(lng) ? { lat, lng } : map.getCenter();
+  editPendingPoint = { lat: Number(center.lat), lng: Number(center.lng) };
+  editPopupLocationPicker.setPoint(center.lat, center.lng, "init", { showMessage: "", panTo: true });
+  setEditLocationPickerMsg("可点击地图、搜索定位或使用当前定位");
+  setTimeout(() => {
+    editPickerMap.invalidateSize();
+  }, 0);
+}
+
+function closeEditLocationPicker() {
+  editLocationPickerModal.classList.add("hidden");
+}
+
 function setNotificationDotVisible(visible) {
   if (!notificationDot) return;
   notificationDot.classList.toggle("hidden", !visible);
@@ -104,7 +162,7 @@ function renderManagedSelect() {
     opt.textContent = "暂无已上传摊位";
     managedStallSelect.appendChild(opt);
     managedStallSelect.disabled = true;
-    managedStallHint.textContent = "鏆傛棤鍙鐞嗘憡浣嶏紝璇峰厛鏂板骞堕€氳繃瀹℃牳";
+    managedStallHint.textContent = "暂无可管理摊位，请先新增并通过审核";
     return;
   }
 
@@ -121,25 +179,25 @@ function renderManagedSelect() {
   }
   managedStallSelect.value = String(currentManagedStallId);
   const stall = getCurrentStall();
-  managedStallHint.textContent = stall ? `褰撳墠绠＄悊锛?${stall.id} ${stall.name}` : "璇峰厛閫夋嫨涓€涓凡涓婁紶鎽婁綅";
+  managedStallHint.textContent = stall ? `当前管理：#${stall.id} ${stall.name}` : "请先选择一个已上传摊位";
 }
 
 function renderSelectedStallDetail() {
   const stall = getCurrentStall();
   if (!stall) {
-    selectedStallTitle.textContent = "璇烽€夋嫨鎽婁綅";
-    selectedStallDetail.textContent = "鍙充晶鏄剧ず鎽婁綅绠＄悊淇℃伅";
+    selectedStallTitle.textContent = "请选择摊位";
+    selectedStallDetail.textContent = "右侧显示摊位管理信息";
     return;
   }
 
   selectedStallTitle.textContent = `#${stall.id} ${stall.name}`;
   selectedStallDetail.innerHTML = `
-    <div><strong>钀ヤ笟鐘舵€侊細</strong>${escapeHtml(businessStatusText(stall))}</div>
-    <div><strong>缁忚惀绫诲埆锛?/strong>${escapeHtml(stall.category)}</div>
-    <div><strong>钀ヤ笟鏃堕棿锛?/strong>${escapeHtml(stall.open_time)}</div>
-    <div><strong>浣嶇疆锛?/strong>${stall.lat}, ${stall.lng}</div>
-    ${stall.live_updated_at ? `<div><strong>鏈€杩戞洿鏂帮細</strong>${escapeHtml(stall.live_updated_at)}</div>` : ""}
-    <div><strong>绠€浠嬶細</strong>${escapeHtml(stall.description || "鏆傛棤")}</div>
+    <div><strong>营业状态：</strong>${escapeHtml(businessStatusText(stall))}</div>
+    <div><strong>经营类别：</strong>${escapeHtml(stall.category)}</div>
+    <div><strong>营业时间：</strong>${escapeHtml(stall.open_time)}</div>
+    <div><strong>位置：</strong>${stall.lat}, ${stall.lng}</div>
+    ${stall.live_updated_at ? `<div><strong>最近更新：</strong>${escapeHtml(stall.live_updated_at)}</div>` : ""}
+    <div><strong>简介：</strong>${escapeHtml(stall.description || "暂无")}</div>
     ${renderImageGallery(stall.image_url)}
   `;
 }
@@ -148,7 +206,7 @@ function renderMySubmissions(rows) {
   const list = document.getElementById("mySubmissionsList");
   list.innerHTML = "";
   if (rows.length === 0) {
-    list.innerHTML = "<li>鏆傛棤鎻愪氦璁板綍</li>";
+    list.innerHTML = "<li>暂无提交记录</li>";
     return;
   }
   rows.forEach((s) => {
@@ -156,12 +214,12 @@ function renderMySubmissions(rows) {
     li.className = "list-item";
     li.innerHTML = `
       <div><strong>#${s.id}</strong> ${escapeHtml(s.name)} (${escapeHtml(s.action)})</div>
-      <div class="hint">绫诲埆: ${escapeHtml(s.category || "")} | 钀ヤ笟鏃堕棿: ${escapeHtml(s.open_time || "")}</div>
-      <div class="hint">浣嶇疆: ${s.lat}, ${s.lng}</div>
-      <div class="hint">绠€浠? ${escapeHtml(s.description || "鏆傛棤")}</div>
+      <div class="hint">类别: ${escapeHtml(s.category || "")} | 营业时间: ${escapeHtml(s.open_time || "")}</div>
+      <div class="hint">位置: ${s.lat}, ${s.lng}</div>
+      <div class="hint">简介: ${escapeHtml(s.description || "暂无")}</div>
       ${renderImageGallery(s.image_url)}
-      <div>鐘舵€? ${escapeHtml(s.status)}</div>
-      ${s.reject_reason ? `<div class="hint">椹冲洖鍘熷洜: ${escapeHtml(s.reject_reason)}</div>` : ""}
+      <div>状态: ${escapeHtml(s.status)}</div>
+      ${s.reject_reason ? `<div class="hint">驳回原因: ${escapeHtml(s.reject_reason)}</div>` : ""}
     `;
     list.appendChild(li);
   });
@@ -171,7 +229,7 @@ function renderReviews(rows) {
   const list = document.getElementById("merchantReviewsList");
   list.innerHTML = "";
   if (rows.length === 0) {
-    list.innerHTML = "<li>褰撳墠鎽婁綅鏆傛棤璇勪环</li>";
+    list.innerHTML = "<li>当前摊位暂无评价</li>";
     return;
   }
 
@@ -181,11 +239,11 @@ function renderReviews(rows) {
     li.innerHTML = `
       <div><strong>${escapeHtml(r.user_name)}</strong> ${stars(r.rating)} (${r.rating})</div>
       <div>${escapeHtml(r.content)}</div>
-      <div class="hint">鐘舵€? ${escapeHtml(r.status)} | ${escapeHtml(r.created_at || "")}</div>
-      ${r.merchant_reply ? `<div class="reply-box">宸插洖澶嶏細${escapeHtml(r.merchant_reply)}</div>` : ""}
+      <div class="hint">状态: ${escapeHtml(r.status)} | ${escapeHtml(r.created_at || "")}</div>
+      ${r.merchant_reply ? `<div class="reply-box">已回复：${escapeHtml(r.merchant_reply)}</div>` : ""}
       <div class="inline-form">
-        <input type="text" id="replyInput_${r.id}" placeholder="杈撳叆鍥炲" />
-        <button type="button" data-review-id="${r.id}">淇濆瓨鍥炲</button>
+        <input type="text" id="replyInput_${r.id}" placeholder="输入回复内容" />
+        <button type="button" data-review-id="${r.id}">保存回复</button>
       </div>
     `;
     list.appendChild(li);
@@ -197,7 +255,7 @@ function renderReviews(rows) {
       const input = document.getElementById(`replyInput_${reviewId}`);
       const reply = String(input.value || "").trim();
       if (!reply) {
-        setMsg("鍥炲鍐呭涓嶈兘涓虹┖");
+        setMsg("回复内容不能为空");
         return;
       }
       try {
@@ -248,7 +306,7 @@ async function loadMapStalls() {
       fillOpacity: 0.8,
       weight: 1,
     })
-      .bindPopup(`#${s.id} ${escapeHtml(s.name)}<br/>鐘舵€侊細${escapeHtml(businessStatusText(s))}`)
+      .bindPopup(`#${s.id} ${escapeHtml(s.name)}<br/>状态：${escapeHtml(businessStatusText(s))}`)
       .addTo(allLayer);
   });
 
@@ -260,7 +318,7 @@ async function loadMapStalls() {
       fillOpacity: 0.9,
       weight: 1,
     })
-      .bindPopup(`#${s.id} ${escapeHtml(s.name)}<br/>鐘舵€侊細${escapeHtml(businessStatusText(s))}`)
+      .bindPopup(`#${s.id} ${escapeHtml(s.name)}<br/>状态：${escapeHtml(businessStatusText(s))}`)
       .addTo(ownLayer)
       .on("click", async () => {
         currentManagedStallId = s.id;
@@ -286,7 +344,7 @@ async function loadReviewsForManagedStall() {
 function openEditModal() {
   const stall = getCurrentStall();
   if (!stall) {
-    setMsg("璇峰厛閫夋嫨鎽婁綅");
+    setMsg("请先选择摊位");
     return;
   }
   const form = document.getElementById("editStallForm");
@@ -301,13 +359,14 @@ function openEditModal() {
 }
 
 function closeEditModal() {
+  closeEditLocationPicker();
   editStallModal.classList.add("hidden");
 }
 
 async function openStallNow() {
   const stall = getCurrentStall();
   if (!stall) {
-    setMsg("璇峰厛閫夋嫨鎽婁綅");
+    setMsg("请先选择摊位");
     return;
   }
 
@@ -345,7 +404,7 @@ async function openStallNow() {
 async function closeStallNow() {
   const stall = getCurrentStall();
   if (!stall) {
-    setMsg("璇峰厛閫夋嫨鎽婁綅");
+    setMsg("请先选择摊位");
     return;
   }
   const result = await apiFetch(`/api/merchant/stalls/${stall.id}/close`, { method: "POST" }, auth.token);
@@ -366,7 +425,7 @@ managedStallSelect.addEventListener("change", () => {
   currentManagedStallId = id || null;
   renderSelectedStallDetail();
   const stall = getCurrentStall();
-  managedStallHint.textContent = stall ? `褰撳墠绠＄悊锛?${stall.id} ${stall.name}` : "璇峰厛閫夋嫨涓€涓凡涓婁紶鎽婁綅";
+  managedStallHint.textContent = stall ? `当前管理：#${stall.id} ${stall.name}` : "请先选择一个已上传摊位";
 });
 
 document.getElementById("switchManagedStallBtn").addEventListener("click", async () => {
@@ -374,7 +433,7 @@ document.getElementById("switchManagedStallBtn").addEventListener("click", async
   const stall = getCurrentStall();
   if (stall) {
     map.setView([stall.lat, stall.lng], 16);
-    setMsg(`宸茶繘鍏?#${stall.id} 绠＄悊`);
+    setMsg(`已进入 #${stall.id} 管理`);
   }
 });
 
@@ -385,6 +444,32 @@ document.getElementById("refreshBtn").addEventListener("click", () => {
   refreshAll().catch((error) => setMsg(error.message));
 });
 document.getElementById("editStallBtn").addEventListener("click", openEditModal);
+openEditLocationPickerBtn.addEventListener("click", () => {
+  openEditLocationPicker();
+});
+editLocationPickerSearchBtn.addEventListener("click", async () => {
+  await editPopupLocationPicker.search(editLocationPickerSearchInput.value);
+});
+editLocationPickerLocateBtn.addEventListener("click", async () => {
+  await editPopupLocationPicker.useCurrentLocation();
+});
+editLocationPickerConfirmBtn.addEventListener("click", () => {
+  if (!editPendingPoint) {
+    setEditLocationPickerMsg("请先在地图上选择位置");
+    return;
+  }
+  const form = document.getElementById("editStallForm");
+  form.elements.lng.value = Number(editPendingPoint.lng).toFixed(6);
+  form.elements.lat.value = Number(editPendingPoint.lat).toFixed(6);
+  closeEditLocationPicker();
+  setMsg("已填充经纬度");
+});
+editLocationPickerCancelBtn.addEventListener("click", () => {
+  closeEditLocationPicker();
+});
+editLocationPickerModal.addEventListener("click", (e) => {
+  if (e.target === editLocationPickerModal) closeEditLocationPicker();
+});
 document.getElementById("openStallBtn").addEventListener("click", () => {
   openStallNow().catch((error) => setMsg(error.message));
 });
@@ -400,7 +485,7 @@ document.getElementById("editStallForm").addEventListener("submit", async (e) =>
   e.preventDefault();
   const stall = getCurrentStall();
   if (!stall) {
-    setMsg("璇峰厛閫夋嫨鎽婁綅");
+    setMsg("请先选择摊位");
     return;
   }
 

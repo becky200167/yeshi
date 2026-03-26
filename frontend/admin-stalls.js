@@ -6,6 +6,14 @@ const pageInfo = document.getElementById("stallPageInfo");
 let currentPage = 1;
 let totalPages = 1;
 
+const preview = createAdminStallPreview({
+  auth,
+  setPageMessage: setMsg,
+  onMutated: async () => {
+    await loadAdminStalls();
+  },
+});
+
 function setMsg(text) {
   adminMsg.textContent = text;
 }
@@ -32,25 +40,39 @@ async function loadAdminStalls() {
     return;
   }
 
-  items.forEach((s) => {
+  items.forEach((stall) => {
     const li = document.createElement("li");
     li.className = "list-item";
     li.innerHTML = `
-      <div><strong>#${s.id} ${escapeHtml(s.name)}</strong> (${escapeHtml(s.category)})</div>
-      <div>商户: ${escapeHtml(s.merchant_name)} | 状态: ${escapeHtml(s.status)}</div>
-      <div class="hint">位置: ${s.lat}, ${s.lng} | 营业时间: ${escapeHtml(s.open_time)}</div>
+      <div>
+        <button type="button" class="inline-link-btn" data-preview-stall="${stall.id}">#${stall.id} ${escapeHtml(stall.name)}</button>
+        (${escapeHtml(stall.category)})
+      </div>
+      <div>商户: ${escapeHtml(stall.merchant_name || "")} | 状态: ${escapeHtml(stall.status || "")}</div>
+      <div class="hint">位置: ${stall.lat}, ${stall.lng} | 营业时间: ${escapeHtml(stall.open_time || "")}</div>
     `;
+
+    li.querySelector(`[data-preview-stall="${stall.id}"]`)?.addEventListener("click", () => {
+      preview.openStall(stall.id).catch((error) => setMsg(error.message));
+    });
 
     const box = document.createElement("div");
     box.className = "panel-actions";
 
+    const viewBtn = document.createElement("button");
+    viewBtn.type = "button";
+    viewBtn.textContent = "查看";
+    viewBtn.addEventListener("click", () => {
+      preview.openStall(stall.id).catch((error) => setMsg(error.message));
+    });
+
     const offlineBtn = document.createElement("button");
     offlineBtn.type = "button";
     offlineBtn.textContent = "下架";
-    offlineBtn.disabled = s.status === "offline";
+    offlineBtn.disabled = stall.status === "offline";
     offlineBtn.addEventListener("click", async () => {
       try {
-        const result = await apiFetch(`/api/admin/stalls/${s.id}/offline`, { method: "POST" }, auth.token);
+        const result = await apiFetch(`/api/admin/stalls/${stall.id}/offline`, { method: "POST" }, auth.token);
         setMsg(result.message);
         await loadAdminStalls();
       } catch (error) {
@@ -61,10 +83,10 @@ async function loadAdminStalls() {
     const restoreBtn = document.createElement("button");
     restoreBtn.type = "button";
     restoreBtn.textContent = "恢复上架";
-    restoreBtn.disabled = s.status === "approved";
+    restoreBtn.disabled = stall.status === "approved";
     restoreBtn.addEventListener("click", async () => {
       try {
-        const result = await apiFetch(`/api/admin/stalls/${s.id}/restore`, { method: "POST" }, auth.token);
+        const result = await apiFetch(`/api/admin/stalls/${stall.id}/restore`, { method: "POST" }, auth.token);
         setMsg(result.message);
         await loadAdminStalls();
       } catch (error) {
@@ -75,10 +97,11 @@ async function loadAdminStalls() {
     const delBtn = document.createElement("button");
     delBtn.type = "button";
     delBtn.textContent = "删除";
+    delBtn.className = "danger-btn";
     delBtn.addEventListener("click", async () => {
-      if (!window.confirm(`确认删除摊位 #${s.id} ${s.name}？`)) return;
+      if (!window.confirm(`确认删除摊位 #${stall.id} ${stall.name}？`)) return;
       try {
-        const result = await apiFetch(`/api/admin/stalls/${s.id}`, { method: "DELETE" }, auth.token);
+        const result = await apiFetch(`/api/admin/stalls/${stall.id}`, { method: "DELETE" }, auth.token);
         setMsg(result.message);
         await loadAdminStalls();
       } catch (error) {
@@ -86,6 +109,7 @@ async function loadAdminStalls() {
       }
     });
 
+    box.appendChild(viewBtn);
     box.appendChild(offlineBtn);
     box.appendChild(restoreBtn);
     box.appendChild(delBtn);

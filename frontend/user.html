@@ -12,6 +12,7 @@
       <h1>用户端</h1>
       <div>
         <a class="nav-btn notif-btn" href="./notifications.html?role=user"><span>消息中心</span><span id="notificationDot" class="notif-dot hidden"></span></a>
+        <button id="openSubmissionModalBtn">信息报送</button>
         <button id="refreshBtn">刷新数据</button>
         <button id="toggleHeatBtn">切换热力图</button>
         <button id="logoutBtn">退出登录</button>
@@ -93,9 +94,134 @@
       </div>
     </div>
 
+    <div id="submissionModal" class="modal hidden">
+      <div class="modal-card modal-card-wide">
+        <h3>信息报送（需管理员审核）</h3>
+        <p id="submissionMsg" class="hint"></p>
+        <div class="inline-form">
+          <button id="showCreateFormBtn" type="button">新增缺失摊位</button>
+          <button id="showCorrectionFormBtn" type="button">提交勘误</button>
+          <button id="closeSubmissionModalBtn" type="button">关闭</button>
+        </div>
+
+        <section id="createSubmissionSection">
+          <h4>新增缺失摊位</h4>
+          <form id="userCreateSubmissionForm" class="form-grid">
+            <label>摊位名称<input name="name" required /></label>
+            <label>经营类别<input name="category" required /></label>
+            <label>营业时间<input name="open_time" placeholder="18:00-23:00" required /></label>
+            <label>摊位图片（可多选）
+              <input id="createImageFilesInput" name="image_files" type="file" accept="image/*" multiple />
+            </label>
+            <div class="inline-form location-tools">
+              <button id="createMapPickBtn" type="button">地图选点</button>
+              <span class="hint">点击后弹出地图与搜索框选位置</span>
+            </div>
+            <label>经度<input id="createLngInput" name="lng" type="number" step="0.000001" required /></label>
+            <label>纬度<input id="createLatInput" name="lat" type="number" step="0.000001" required /></label>
+            <label>简介<textarea name="description" rows="3"></textarea></label>
+            <button type="submit">提交新增报送</button>
+          </form>
+        </section>
+
+        <section id="correctionSubmissionSection" class="hidden">
+          <h4>现有摊位勘误</h4>
+          <form id="userCorrectionForm" class="form-grid">
+            <label>目标摊位
+              <select id="correctionStallSelect" name="stall_id" required></select>
+            </label>
+            <label>提交模式
+              <select id="correctionModeSelect" name="submission_mode">
+                <option value="full">完整信息</option>
+                <option value="patch">仅改动字段</option>
+              </select>
+            </label>
+            <label>勘误说明
+              <textarea name="change_note" rows="2" placeholder="请说明纠错原因或依据" required></textarea>
+            </label>
+
+            <div id="correctionFullFields" class="form-grid block-box">
+              <label>摊位名称<input name="name" required /></label>
+              <label>经营类别<input name="category" required /></label>
+              <label>营业时间<input name="open_time" required /></label>
+              <div class="inline-form location-tools">
+                <button id="correctionFullMapPickBtn" type="button">地图选点</button>
+                <span class="hint">点击后弹出地图与搜索框选位置</span>
+              </div>
+              <label>经度<input name="lng" type="number" step="0.000001" required /></label>
+              <label>纬度<input name="lat" type="number" step="0.000001" required /></label>
+              <label>热度<input name="heat" type="number" step="0.01" min="0" /></label>
+              <label>摊位图片（可多选）
+                <input id="correctionFullImageFilesInput" name="full_image_files" type="file" accept="image/*" multiple />
+              </label>
+              <label>简介<textarea name="description" rows="3"></textarea></label>
+            </div>
+
+            <div id="correctionPatchFields" class="form-grid block-box hidden">
+              <p class="hint">勾选需要修改的字段，并填写新值</p>
+              <div class="inline-form location-tools">
+                <button id="correctionPatchMapPickBtn" type="button">地图选点</button>
+                <span class="hint">点击后弹出地图与搜索框，自动勾选经纬度</span>
+              </div>
+              <div class="patch-row">
+                <label><input type="checkbox" data-patch-key="name" /> 摊位名称</label>
+                <input id="patch_name" type="text" placeholder="新名称" />
+              </div>
+              <div class="patch-row">
+                <label><input type="checkbox" data-patch-key="category" /> 经营类别</label>
+                <input id="patch_category" type="text" placeholder="新类别" />
+              </div>
+              <div class="patch-row">
+                <label><input type="checkbox" data-patch-key="open_time" /> 营业时间</label>
+                <input id="patch_open_time" type="text" placeholder="如 18:00-23:00" />
+              </div>
+              <div class="patch-row">
+                <label><input type="checkbox" data-patch-key="lng" /> 经度</label>
+                <input id="patch_lng" type="number" step="0.000001" />
+              </div>
+              <div class="patch-row">
+                <label><input type="checkbox" data-patch-key="lat" /> 纬度</label>
+                <input id="patch_lat" type="number" step="0.000001" />
+              </div>
+              <div class="patch-row">
+                <label><input type="checkbox" data-patch-key="heat" /> 热度</label>
+                <input id="patch_heat" type="number" step="0.01" min="0" />
+              </div>
+              <div class="patch-row">
+                <label><input type="checkbox" data-patch-key="description" /> 简介</label>
+                <textarea id="patch_description" rows="2"></textarea>
+              </div>
+              <div class="patch-row">
+                <label><input type="checkbox" data-patch-key="image_url" /> 摊位图片</label>
+                <input id="patchImageFilesInput" type="file" accept="image/*" multiple />
+              </div>
+            </div>
+
+            <button type="submit">提交勘误</button>
+          </form>
+        </section>
+      </div>
+    </div>
+
+    <div id="locationPickerModal" class="modal hidden">
+      <div class="modal-card modal-card-wide">
+        <h3>地图选点</h3>
+        <p id="locationPickerMsg" class="hint"></p>
+        <div class="inline-form location-tools">
+          <input id="locationPickerSearchInput" type="text" placeholder="搜索位置，如：黄兴路步行街" />
+          <button id="locationPickerSearchBtn" type="button">搜索定位</button>
+          <button id="locationPickerLocateBtn" type="button">当前定位</button>
+          <button id="locationPickerConfirmBtn" type="button">确认选点</button>
+          <button id="locationPickerCancelBtn" type="button">取消</button>
+        </div>
+        <div id="locationPickerMap" class="map-box map-mid"></div>
+      </div>
+    </div>
+
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://unpkg.com/leaflet.heat/dist/leaflet-heat.js"></script>
     <script src="./auth.js"></script>
+    <script src="./image-viewer.js"></script>
     <script src="./user.js"></script>
   </body>
 </html>

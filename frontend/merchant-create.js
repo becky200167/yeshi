@@ -1,16 +1,82 @@
-﻿const auth = requireRole("merchant");
+const auth = requireRole("merchant");
 bindLogout();
-
-const map = L.map("createMap").setView([28.21, 113.0], 12);
-L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-  maxZoom: 19,
-  attribution: "&copy; OpenStreetMap",
-}).addTo(map);
 
 const createMsg = document.getElementById("createMsg");
 const notificationDot = document.getElementById("notificationDot");
-let pickMarker = null;
 const MAX_IMAGE_COUNT = 8;
+
+const createLocationPickerModal = document.getElementById("createLocationPickerModal");
+const createLocationPickerMsg = document.getElementById("createLocationPickerMsg");
+const createLocationSearchInput = document.getElementById("createLocationSearchInput");
+const createLocationSearchBtn = document.getElementById("createLocationSearchBtn");
+const createLocationLocateBtn = document.getElementById("createLocationLocateBtn");
+const createLocationConfirmBtn = document.getElementById("createLocationConfirmBtn");
+const createLocationCancelBtn = document.getElementById("createLocationCancelBtn");
+
+let pickerMap = null;
+let picker = null;
+let pendingPoint = null;
+
+function setMsg(text) {
+  createMsg.textContent = text;
+}
+
+function setPickerMsg(text) {
+  createLocationPickerMsg.textContent = text;
+}
+
+function setNotificationDotVisible(visible) {
+  if (!notificationDot) return;
+  notificationDot.classList.toggle("hidden", !visible);
+}
+
+async function updateNotificationDot() {
+  const data = await apiFetch("/api/notifications?unread_only=1&page=1&page_size=1", {}, auth.token);
+  const { pagination } = unwrapItems(data);
+  setNotificationDotVisible((pagination?.total || 0) > 0);
+}
+
+function ensurePicker() {
+  if (picker) return;
+  pickerMap = L.map("createLocationMap").setView([28.21, 113.0], 12);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19,
+    attribution: "&copy; OpenStreetMap",
+  }).addTo(pickerMap);
+
+  picker = createLocationPicker({
+    map: pickerMap,
+    markerPopupText: "当前选点",
+    onPointSelected(lat, lng) {
+      pendingPoint = { lat, lng };
+    },
+    onMessage(text) {
+      setPickerMsg(text);
+    },
+  });
+  picker.bindMapClick();
+}
+
+function openLocationPicker() {
+  ensurePicker();
+  createLocationPickerModal.classList.remove("hidden");
+
+  const latRaw = Number(document.getElementById("latInput").value);
+  const lngRaw = Number(document.getElementById("lngInput").value);
+  const center = Number.isFinite(latRaw) && Number.isFinite(lngRaw)
+    ? { lat: latRaw, lng: lngRaw }
+    : { lat: 28.21, lng: 113.0 };
+  pendingPoint = { lat: center.lat, lng: center.lng };
+  picker.setPoint(center.lat, center.lng, "init", { showMessage: "", panTo: true });
+  setPickerMsg("可点击地图、搜索定位或使用当前定位");
+  setTimeout(() => {
+    pickerMap.invalidateSize();
+  }, 0);
+}
+
+function closeLocationPicker() {
+  createLocationPickerModal.classList.add("hidden");
+}
 
 async function uploadImages(fileList) {
   const files = Array.from(fileList || []);
@@ -33,54 +99,30 @@ async function uploadImages(fileList) {
   return urls.length > 0 ? JSON.stringify(urls) : "";
 }
 
-function setMsg(text) {
-  createMsg.textContent = text;
-}
-
-function setNotificationDotVisible(visible) {
-  if (!notificationDot) return;
-  notificationDot.classList.toggle("hidden", !visible);
-}
-
-async function updateNotificationDot() {
-  const data = await apiFetch("/api/notifications?unread_only=1&page=1&page_size=1", {}, auth.token);
-  const { pagination } = unwrapItems(data);
-  setNotificationDotVisible((pagination?.total || 0) > 0);
-}
-
-function setPickedPoint(lat, lng) {
-  document.getElementById("latInput").value = Number(lat).toFixed(6);
-  document.getElementById("lngInput").value = Number(lng).toFixed(6);
-  if (pickMarker) map.removeLayer(pickMarker);
-  pickMarker = L.marker([lat, lng]).addTo(map).bindPopup("褰撳墠閫夌偣").openPopup();
-}
-
-map.on("click", (e) => {
-  setPickedPoint(e.latlng.lat, e.latlng.lng);
+document.getElementById("openCreateLocationPickerBtn").addEventListener("click", () => {
+  openLocationPicker();
 });
-
-document.getElementById("searchBtn").addEventListener("click", async () => {
-  const keyword = document.getElementById("searchInput").value.trim();
-  if (!keyword) {
-    setMsg("璇疯緭鍏ユ悳绱㈠叧閿瘝");
+createLocationSearchBtn.addEventListener("click", async () => {
+  await picker.search(createLocationSearchInput.value);
+});
+createLocationLocateBtn.addEventListener("click", async () => {
+  await picker.useCurrentLocation();
+});
+createLocationConfirmBtn.addEventListener("click", () => {
+  if (!pendingPoint) {
+    setPickerMsg("请先在地图上选择位置");
     return;
   }
-  try {
-    const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(keyword)}`;
-    const res = await fetch(url, { headers: { Accept: "application/json" } });
-    const data = await res.json();
-    if (!Array.isArray(data) || data.length === 0) {
-      setMsg("鏈壘鍒拌鍦扮偣锛岃灏濊瘯鏇村叿浣撳叧閿瘝");
-      return;
-    }
-    const lat = Number(data[0].lat);
-    const lng = Number(data[0].lon);
-    map.setView([lat, lng], 16);
-    setPickedPoint(lat, lng);
-    setMsg("宸插畾浣嶏紝璇风‘璁ゆ垨鐐瑰嚮鍦板浘寰皟浣嶇疆");
-  } catch (error) {
-    setMsg(`鍦板浘鎼滅储澶辫触: ${error.message}`);
-  }
+  document.getElementById("latInput").value = Number(pendingPoint.lat).toFixed(6);
+  document.getElementById("lngInput").value = Number(pendingPoint.lng).toFixed(6);
+  closeLocationPicker();
+  setMsg("已填充经纬度");
+});
+createLocationCancelBtn.addEventListener("click", () => {
+  closeLocationPicker();
+});
+createLocationPickerModal.addEventListener("click", (e) => {
+  if (e.target === createLocationPickerModal) closeLocationPicker();
 });
 
 document.getElementById("createStallForm").addEventListener("submit", async (e) => {
@@ -109,10 +151,7 @@ document.getElementById("createStallForm").addEventListener("submit", async (e) 
     );
     setMsg(result.message);
     e.target.reset();
-    if (pickMarker) {
-      map.removeLayer(pickMarker);
-      pickMarker = null;
-    }
+    if (picker) picker.clearMarker();
   } catch (error) {
     setMsg(error.message);
   }

@@ -66,6 +66,10 @@
           <label>摊位图片（可多选）
             <input id="editImageFilesInput" name="image_files" type="file" accept="image/*" multiple />
           </label>
+          <div class="inline-form location-tools">
+            <button id="openEditLocationPickerBtn" type="button">地图选点</button>
+            <span class="hint">点击后弹出地图与搜索框选位置</span>
+          </div>
           <label>经度<input name="lng" type="number" step="0.000001" required /></label>
           <label>纬度<input name="lat" type="number" step="0.000001" required /></label>
           <label>简介<textarea name="description" rows="3"></textarea></label>
@@ -77,8 +81,24 @@
       </div>
     </div>
 
+    <div id="editLocationPickerModal" class="modal hidden">
+      <div class="modal-card modal-card-wide">
+        <h3>地图选点</h3>
+        <p id="editLocationPickerMsg" class="hint"></p>
+        <div class="inline-form location-tools">
+          <input id="editLocationPickerSearchInput" type="text" placeholder="搜索位置，如：五一广场" />
+          <button id="editLocationPickerSearchBtn" type="button">搜索定位</button>
+          <button id="editLocationPickerLocateBtn" type="button">当前定位</button>
+          <button id="editLocationPickerConfirmBtn" type="button">确认选点</button>
+          <button id="editLocationPickerCancelBtn" type="button">取消</button>
+        </div>
+        <div id="editLocationPickerMap" class="map-box map-mid"></div>
+      </div>
+    </div>
+
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="./auth.js"></script>
+    <script src="./image-viewer.js"></script>
     <script src="./merchant.js"></script>
   </body>
 </html>

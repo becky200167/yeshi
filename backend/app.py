@@ -22,6 +22,7 @@ REVIEWS_JSON_FILE = DATA_DIR / "reviews.json"
 UPLOAD_DIR = DATA_DIR / "uploads"
 MAX_UPLOAD_IMAGE_COUNT = 8
 ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+SUBMISSION_EDITABLE_FIELDS = {"name", "category", "open_time", "lng", "lat", "description", "image_url", "heat"}
 
 app = Flask(__name__)
 CORS(app)
@@ -103,6 +104,8 @@ def init_db() -> None:
         CREATE TABLE IF NOT EXISTS submissions (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           merchant_name TEXT NOT NULL,
+          submitter_name TEXT NOT NULL DEFAULT 'system',
+          submitter_role TEXT NOT NULL DEFAULT 'merchant' CHECK (submitter_role IN ('user', 'merchant')),
           name TEXT NOT NULL,
           category TEXT NOT NULL,
           description TEXT,
@@ -113,6 +116,9 @@ def init_db() -> None:
           heat REAL NOT NULL DEFAULT 0.5,
           target_stall_id INTEGER,
           action TEXT NOT NULL DEFAULT 'create',
+          submission_mode TEXT NOT NULL DEFAULT 'full' CHECK (submission_mode IN ('full', 'patch')),
+          change_payload TEXT,
+          change_note TEXT,
           status TEXT NOT NULL DEFAULT 'pending',
           reject_reason TEXT,
           created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
@@ -209,6 +215,19 @@ def init_db() -> None:
         cur.execute("UPDATE submissions SET created_at = datetime('now', 'localtime') WHERE created_at IS NULL")
     if not column_exists(conn, "submissions", "reviewed_at"):
         cur.execute("ALTER TABLE submissions ADD COLUMN reviewed_at TEXT")
+    if not column_exists(conn, "submissions", "submitter_name"):
+        cur.execute("ALTER TABLE submissions ADD COLUMN submitter_name TEXT")
+    if not column_exists(conn, "submissions", "submitter_role"):
+        cur.execute("ALTER TABLE submissions ADD COLUMN submitter_role TEXT")
+    if not column_exists(conn, "submissions", "submission_mode"):
+        cur.execute("ALTER TABLE submissions ADD COLUMN submission_mode TEXT")
+    if not column_exists(conn, "submissions", "change_payload"):
+        cur.execute("ALTER TABLE submissions ADD COLUMN change_payload TEXT")
+    if not column_exists(conn, "submissions", "change_note"):
+        cur.execute("ALTER TABLE submissions ADD COLUMN change_note TEXT")
+    cur.execute("UPDATE submissions SET submitter_name = merchant_name WHERE submitter_name IS NULL OR submitter_name = ''")
+    cur.execute("UPDATE submissions SET submitter_role = 'merchant' WHERE submitter_role IS NULL OR submitter_role = ''")
+    cur.execute("UPDATE submissions SET submission_mode = 'full' WHERE submission_mode IS NULL OR submission_mode = ''")
 
     if not column_exists(conn, "reviews", "merchant_reply"):
         cur.execute("ALTER TABLE reviews ADD COLUMN merchant_reply TEXT")
@@ -235,6 +254,24 @@ def init_db() -> None:
         cur.executemany(
             "INSERT INTO users (username, password, role, status) VALUES (?, ?, ?, ?)",
             [(u["username"], u["password"], u["role"], u.get("status", "active")) for u in users],
+        )
+    else:
+        # Keep core demo accounts stable even if database data drifted.
+        core_users = [
+            ("admin01", "123456", "admin", "active"),
+            ("user01", "123456", "user", "active"),
+            ("merchant01", "123456", "merchant", "active"),
+        ]
+        cur.executemany(
+            """
+            INSERT INTO users (username, password, role, status)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(username) DO UPDATE SET
+              password = excluded.password,
+              role = excluded.role,
+              status = excluded.status
+            """,
+            core_users,
         )
 
     stall_count = cur.execute("SELECT COUNT(*) FROM stalls").fetchone()[0]
@@ -270,13 +307,15 @@ def init_db() -> None:
             cur.executemany(
                 """
                 INSERT INTO submissions (
-                  merchant_name, name, category, description, image_url, open_time, lng, lat, heat,
-                  target_stall_id, action, status, reject_reason, created_at, reviewed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  merchant_name, submitter_name, submitter_role, name, category, description, image_url, open_time, lng, lat, heat,
+                  target_stall_id, action, submission_mode, change_payload, change_note, status, reject_reason, created_at, reviewed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
                         s.get("merchant_name", "merchant01"),
+                        s.get("submitter_name", s.get("merchant_name", "merchant01")),
+                        s.get("submitter_role", "merchant"),
                         s.get("name", "未命名摊位"),
                         s.get("category", "其他"),
                         s.get("description", ""),
@@ -287,6 +326,11 @@ def init_db() -> None:
                         float(s.get("heat", 0.5)),
                         s.get("target_stall_id"),
                         s.get("action", "create"),
+                        s.get("submission_mode", "full"),
+                        json.dumps(s.get("change_payload", {}), ensure_ascii=False)
+                        if isinstance(s.get("change_payload"), dict)
+                        else s.get("change_payload"),
+                        s.get("change_note", ""),
                         s.get("status", "pending"),
                         s.get("reject_reason"),
                         s.get("created_at", "2026-01-01 18:00:00"),
@@ -353,7 +397,68 @@ def require_role(roles: set[str]) -> tuple[dict[str, str] | None, Any | None]:
     return user, None
 
 
+def sanitize_submission_changes(raw: Any) -> tuple[dict[str, Any], str]:
+    if isinstance(raw, str):
+        raw = raw.strip()
+        if not raw:
+            return {}, "勘误内容不能为空"
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}, "勘误内容格式不合法"
+    else:
+        parsed = raw
+
+    if not isinstance(parsed, dict):
+        return {}, "勘误内容必须是对象"
+    if not parsed:
+        return {}, "勘误内容不能为空"
+
+    clean: dict[str, Any] = {}
+    for key, value in parsed.items():
+        field = str(key)
+        if field not in SUBMISSION_EDITABLE_FIELDS:
+            return {}, f"不支持的勘误字段: {field}"
+        if field in {"name", "category", "open_time"}:
+            text = str(value or "").strip()
+            if not text:
+                return {}, f"{field} 不能为空"
+            clean[field] = text
+        elif field in {"description", "image_url"}:
+            clean[field] = str(value or "").strip()
+        elif field in {"lng", "lat", "heat"}:
+            try:
+                num_value = float(value)
+            except (TypeError, ValueError):
+                return {}, f"{field} 格式不正确"
+            clean[field] = num_value
+
+    lng = clean.get("lng")
+    lat = clean.get("lat")
+    if lng is not None and not (-180 <= float(lng) <= 180):
+        return {}, "经度超出合法范围"
+    if lat is not None and not (-90 <= float(lat) <= 90):
+        return {}, "纬度超出合法范围"
+
+    return clean, ""
+
+
 def validate_submission(payload: dict[str, Any]) -> tuple[bool, str]:
+    submission_mode = str(payload.get("submission_mode", "full")).strip().lower() or "full"
+    if submission_mode not in {"full", "patch"}:
+        return False, "提交模式不合法"
+
+    change_note = str(payload.get("change_note", "")).strip()
+    if len(change_note) > 200:
+        return False, "勘误说明不能超过 200 字"
+
+    if submission_mode == "patch":
+        clean, message = sanitize_submission_changes(payload.get("change_payload"))
+        if message:
+            return False, message
+        payload["change_payload"] = clean
+        return True, ""
+
     required = ["name", "category", "open_time", "lng", "lat"]
     missing = [k for k in required if k not in payload or payload[k] in (None, "")]
     if missing:
@@ -367,6 +472,12 @@ def validate_submission(payload: dict[str, Any]) -> tuple[bool, str]:
 
     if not (-180 <= lng <= 180 and -90 <= lat <= 90):
         return False, "经纬度超出合法范围"
+
+    if "heat" in payload and payload["heat"] not in (None, ""):
+        try:
+            float(payload["heat"])
+        except (TypeError, ValueError):
+            return False, "热度格式不正确"
 
     return True, ""
 
@@ -388,16 +499,30 @@ def validate_review(payload: dict[str, Any]) -> tuple[bool, str]:
     return True, ""
 
 
-def create_submission_record(db: sqlite3.Connection, merchant_name: str, payload: dict[str, Any]) -> int:
+def create_submission_record(
+    db: sqlite3.Connection,
+    *,
+    submitter_name: str,
+    submitter_role: str,
+    merchant_name: str,
+    payload: dict[str, Any],
+) -> int:
+    submission_mode = str(payload.get("submission_mode", "full")).strip().lower() or "full"
+    change_payload = payload.get("change_payload")
+    change_payload_text = (
+        json.dumps(change_payload, ensure_ascii=False, separators=(",", ":")) if isinstance(change_payload, dict) else ""
+    )
     cur = db.execute(
         """
         INSERT INTO submissions (
-          merchant_name, name, category, description, image_url, open_time, lng, lat, heat,
-          target_stall_id, action, status, reject_reason, created_at, reviewed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, datetime('now', 'localtime'), NULL)
+          merchant_name, submitter_name, submitter_role, name, category, description, image_url, open_time, lng, lat, heat,
+          target_stall_id, action, submission_mode, change_payload, change_note, status, reject_reason, created_at, reviewed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, datetime('now', 'localtime'), NULL)
         """,
         (
             merchant_name,
+            submitter_name,
+            submitter_role,
             payload["name"],
             payload["category"],
             payload.get("description", ""),
@@ -408,10 +533,238 @@ def create_submission_record(db: sqlite3.Connection, merchant_name: str, payload
             float(payload.get("heat", 0.5)),
             payload.get("target_stall_id"),
             payload.get("action", "create"),
+            submission_mode,
+            change_payload_text,
+            str(payload.get("change_note", "")).strip(),
         ),
     )
     db.commit()
     return int(cur.lastrowid)
+
+
+def apply_submission_to_existing_stall(db: sqlite3.Connection, submission: sqlite3.Row, target_stall_id: int) -> tuple[bool, str]:
+    submission_mode = str(submission["submission_mode"] or "full").strip().lower()
+    if submission_mode == "patch":
+        clean, message = sanitize_submission_changes(submission["change_payload"])
+        if message:
+            return False, message
+        if not clean:
+            return False, "勘误内容不能为空"
+
+        set_parts = [f"{k} = ?" for k in clean.keys()]
+        values: list[Any] = list(clean.values())
+        set_parts.append("status = 'approved'")
+        values.append(target_stall_id)
+        db.execute(f"UPDATE stalls SET {', '.join(set_parts)} WHERE id = ?", tuple(values))
+        return True, ""
+
+    db.execute(
+        """
+        UPDATE stalls
+        SET name = ?, category = ?, description = ?, image_url = ?, open_time = ?, lng = ?, lat = ?, heat = ?, status = 'approved'
+        WHERE id = ?
+        """,
+        (
+            submission["name"],
+            submission["category"],
+            submission["description"],
+            submission["image_url"],
+            submission["open_time"],
+            float(submission["lng"]),
+            float(submission["lat"]),
+            float(submission["heat"]),
+            target_stall_id,
+        ),
+    )
+    return True, ""
+
+
+def fetch_stall_detail(
+    db: sqlite3.Connection,
+    stall_id: int,
+    *,
+    include_all_status: bool = False,
+) -> dict[str, Any] | None:
+    sql = """
+        SELECT
+          s.id, s.name, s.category, s.description, s.image_url, s.open_time,
+          s.lng AS base_lng, s.lat AS base_lat,
+          CASE WHEN s.is_open = 1 AND s.live_lng IS NOT NULL THEN s.live_lng ELSE s.lng END AS lng,
+          CASE WHEN s.is_open = 1 AND s.live_lat IS NOT NULL THEN s.live_lat ELSE s.lat END AS lat,
+          s.heat, s.status, s.merchant_name, s.is_open, s.live_lng, s.live_lat, s.live_updated_at,
+          mu.id AS merchant_user_id, mu.status AS merchant_user_status,
+          CASE WHEN s.is_open = 1 THEN '营业中' ELSE '休息中' END AS business_status,
+          COALESCE(rr.avg_rating, 0) AS avg_rating,
+          COALESCE(rr.review_count, 0) AS review_count
+        FROM stalls s
+        LEFT JOIN users mu ON mu.username = s.merchant_name AND mu.role = 'merchant'
+        LEFT JOIN (
+          SELECT stall_id, AVG(rating) AS avg_rating, COUNT(*) AS review_count
+          FROM reviews
+          WHERE status = 'approved'
+          GROUP BY stall_id
+        ) rr ON rr.stall_id = s.id
+        WHERE s.id = ?
+    """
+    params: list[Any] = [stall_id]
+    if not include_all_status:
+        sql += " AND s.status = 'approved'"
+
+    row = db.execute(sql, tuple(params)).fetchone()
+    return dict(row) if row is not None else None
+
+
+def fetch_user_account(
+    db: sqlite3.Connection,
+    *,
+    username: str,
+    role: str,
+) -> dict[str, Any] | None:
+    if not username:
+        return None
+    row = db.execute(
+        "SELECT id, username, role, status FROM users WHERE username = ? AND role = ?",
+        (username, role),
+    ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def fetch_review_replies_map(
+    db: sqlite3.Connection,
+    review_ids: list[int],
+    *,
+    approved_only: bool,
+) -> dict[int, list[dict[str, Any]]]:
+    if not review_ids:
+        return {}
+
+    placeholders = ",".join("?" for _ in review_ids)
+    sql = f"""
+        SELECT id, review_id, parent_reply_id, user_name, content, status, created_at, updated_at
+        FROM review_replies
+        WHERE review_id IN ({placeholders})
+    """
+    if approved_only:
+        sql += " AND status = 'approved'"
+    sql += " ORDER BY id ASC"
+
+    rows = db.execute(sql, tuple(review_ids)).fetchall()
+    result: dict[int, list[dict[str, Any]]] = {}
+    for row in rows:
+        item = dict(row)
+        review_id = int(item["review_id"])
+        result.setdefault(review_id, []).append(item)
+    return result
+
+
+def fetch_stall_reviews(
+    db: sqlite3.Connection,
+    stall_id: int,
+    *,
+    include_all: bool,
+) -> list[dict[str, Any]]:
+    sql = """
+        SELECT r.id, r.stall_id, r.user_name, r.rating, r.content, r.merchant_reply, r.merchant_reply_at, r.status,
+               r.created_at, r.updated_at, s.name AS stall_name, s.merchant_name,
+               u.id AS user_id, u.status AS user_status
+        FROM reviews r
+        JOIN stalls s ON s.id = r.stall_id
+        LEFT JOIN users u ON u.username = r.user_name AND u.role = 'user'
+        WHERE r.stall_id = ?
+    """
+    params: list[Any] = [stall_id]
+    if not include_all:
+        sql += " AND r.status = 'approved'"
+    sql += " ORDER BY r.id DESC"
+
+    rows = db.execute(sql, tuple(params)).fetchall()
+    reviews = [dict(row) for row in rows]
+    replies_map = fetch_review_replies_map(
+        db,
+        [int(item["id"]) for item in reviews],
+        approved_only=not include_all,
+    )
+    for item in reviews:
+        item["replies"] = replies_map.get(int(item["id"]), [])
+    return reviews
+
+
+def values_differ(left: Any, right: Any) -> bool:
+    try:
+        return float(left) != float(right)
+    except (TypeError, ValueError):
+        return str(left or "") != str(right or "")
+
+
+def build_submission_preview_stall(
+    submission: sqlite3.Row | dict[str, Any],
+    source_stall: dict[str, Any] | None,
+) -> dict[str, Any]:
+    sub = dict(submission)
+    preview: dict[str, Any] = dict(source_stall) if source_stall else {}
+    merchant_account = None
+    merchant_name = str(preview.get("merchant_name") or sub.get("merchant_name") or "").strip()
+
+    if not source_stall and merchant_name:
+        db = get_db()
+        merchant_account = fetch_user_account(db, username=merchant_name, role="merchant")
+
+    preview.update(
+        {
+            "id": preview.get("id") if source_stall else None,
+            "name": sub.get("name", preview.get("name", "")),
+            "category": sub.get("category", preview.get("category", "")),
+            "description": sub.get("description", preview.get("description", "")) or "",
+            "image_url": sub.get("image_url", preview.get("image_url", "")) or "",
+            "open_time": sub.get("open_time", preview.get("open_time", "")),
+            "lng": float(sub.get("lng", preview.get("lng", 0) or 0)),
+            "lat": float(sub.get("lat", preview.get("lat", 0) or 0)),
+            "heat": float(sub.get("heat", preview.get("heat", 0.5) or 0.5)),
+            "status": preview.get("status", sub.get("status", "pending") or "pending"),
+            "merchant_name": preview.get("merchant_name", sub.get("merchant_name", "")),
+            "is_open": preview.get("is_open", 0) or 0,
+            "live_lng": preview.get("live_lng"),
+            "live_lat": preview.get("live_lat"),
+            "live_updated_at": preview.get("live_updated_at"),
+            "merchant_user_id": preview.get("merchant_user_id")
+            if source_stall
+            else (merchant_account or {}).get("id"),
+            "merchant_user_status": preview.get("merchant_user_status")
+            if source_stall
+            else (merchant_account or {}).get("status"),
+            "avg_rating": float(preview.get("avg_rating", 0) or 0),
+            "review_count": int(preview.get("review_count", 0) or 0),
+        }
+    )
+    preview["business_status"] = "营业中" if int(preview.get("is_open", 0) or 0) == 1 else "休息中"
+    return preview
+
+
+def compute_submission_diff_fields(
+    submission: sqlite3.Row | dict[str, Any],
+    source_stall: dict[str, Any] | None,
+) -> list[str]:
+    sub = dict(submission)
+    submission_mode = str(sub.get("submission_mode", "full") or "full").strip().lower()
+    editable_fields = ["name", "category", "description", "image_url", "open_time", "lng", "lat", "heat"]
+
+    if submission_mode == "patch":
+        clean, message = sanitize_submission_changes(sub.get("change_payload"))
+        if not message and clean:
+            return list(clean.keys())
+
+    if source_stall:
+        source_map = {
+            "lng": source_stall.get("base_lng", source_stall.get("lng")),
+            "lat": source_stall.get("base_lat", source_stall.get("lat")),
+        }
+        return [
+            field
+            for field in editable_fields
+            if values_differ(source_map.get(field, source_stall.get(field)), sub.get(field))
+        ]
+
+    return [field for field in editable_fields if sub.get(field) not in (None, "")]
 
 
 def add_audit_log(
@@ -502,7 +855,7 @@ def serve_upload_file(filename: str) -> Any:
 
 @app.post("/api/uploads/images")
 def upload_images() -> Any:
-    user, err = require_role({"merchant", "admin"})
+    user, err = require_role({"user", "merchant", "admin"})
     if err is not None:
         return err
 
@@ -830,7 +1183,14 @@ def create_merchant_stall_submission() -> Any:
         return jsonify({"message": message}), 400
 
     db = get_db()
-    new_id = create_submission_record(db, user["username"], payload)
+    payload["submission_mode"] = "full"
+    new_id = create_submission_record(
+        db,
+        submitter_name=user["username"],
+        submitter_role="merchant",
+        merchant_name=user["username"],
+        payload=payload,
+    )
     submission = db.execute("SELECT * FROM submissions WHERE id = ?", (new_id,)).fetchone()
     return jsonify({"message": "提交成功", "submission": dict(submission)}), 201
 
@@ -856,7 +1216,14 @@ def create_merchant_stall_update_submission(stall_id: int) -> Any:
     if owned is None:
         return jsonify({"message": "无权操作该摊位"}), 403
 
-    new_id = create_submission_record(db, user["username"], payload)
+    payload["submission_mode"] = "full"
+    new_id = create_submission_record(
+        db,
+        submitter_name=user["username"],
+        submitter_role="merchant",
+        merchant_name=user["username"],
+        payload=payload,
+    )
     submission = db.execute("SELECT * FROM submissions WHERE id = ?", (new_id,)).fetchone()
     return jsonify({"message": "提交成功", "submission": dict(submission)}), 201
 
@@ -865,6 +1232,99 @@ def create_merchant_stall_update_submission(stall_id: int) -> Any:
 def create_submission_compat() -> Any:
     # Backward-compatible endpoint.
     return create_merchant_stall_submission()
+
+
+@app.post("/api/user/stalls")
+def create_user_stall_submission() -> Any:
+    user, err = require_role({"user"})
+    if err is not None:
+        return err
+
+    payload = request.get_json(silent=True) or {}
+    payload["action"] = "create"
+    payload["submission_mode"] = "full"
+    ok, message = validate_submission(payload)
+    if not ok:
+        return jsonify({"message": message}), 400
+
+    db = get_db()
+    new_id = create_submission_record(
+        db,
+        submitter_name=user["username"],
+        submitter_role="user",
+        merchant_name="system",
+        payload=payload,
+    )
+    submission = db.execute("SELECT * FROM submissions WHERE id = ?", (new_id,)).fetchone()
+    return jsonify({"message": "报送成功，等待管理员审核", "submission": dict(submission)}), 201
+
+
+@app.post("/api/user/stalls/<int:stall_id>/corrections")
+def create_user_stall_correction_submission(stall_id: int) -> Any:
+    user, err = require_role({"user"})
+    if err is not None:
+        return err
+
+    payload = request.get_json(silent=True) or {}
+    payload["action"] = "update"
+    payload["target_stall_id"] = stall_id
+    submission_mode = str(payload.get("submission_mode", "full")).strip().lower() or "full"
+    payload["submission_mode"] = submission_mode
+    payload["change_note"] = str(payload.get("change_note", "")).strip()
+    if not payload["change_note"]:
+        return jsonify({"message": "请填写勘误说明"}), 400
+
+    db = get_db()
+    target = db.execute(
+        "SELECT id, name, category, description, image_url, open_time, lng, lat, heat FROM stalls WHERE id = ?",
+        (stall_id,),
+    ).fetchone()
+    if target is None:
+        return jsonify({"message": "目标摊位不存在"}), 404
+
+    if submission_mode == "patch":
+        ok, message = validate_submission(payload)
+        if not ok:
+            return jsonify({"message": message}), 400
+        changes = payload.get("change_payload", {})
+        merged = {
+            "name": target["name"],
+            "category": target["category"],
+            "description": target["description"] or "",
+            "image_url": target["image_url"] or "",
+            "open_time": target["open_time"],
+            "lng": float(target["lng"]),
+            "lat": float(target["lat"]),
+            "heat": float(target["heat"]),
+        }
+        merged.update(changes)
+        merged["action"] = "update"
+        merged["target_stall_id"] = stall_id
+        merged["submission_mode"] = "patch"
+        merged["change_payload"] = changes
+        merged["change_note"] = payload["change_note"]
+        payload = merged
+    else:
+        if payload.get("description") is None:
+            payload["description"] = target["description"] or ""
+        if payload.get("image_url") in (None, ""):
+            payload["image_url"] = target["image_url"] or ""
+        if payload.get("heat") in (None, ""):
+            payload["heat"] = target["heat"]
+        ok, message = validate_submission(payload)
+        if not ok:
+            return jsonify({"message": message}), 400
+        payload["submission_mode"] = "full"
+
+    new_id = create_submission_record(
+        db,
+        submitter_name=user["username"],
+        submitter_role="user",
+        merchant_name="system",
+        payload=payload,
+    )
+    submission = db.execute("SELECT * FROM submissions WHERE id = ?", (new_id,)).fetchone()
+    return jsonify({"message": "勘误提交成功，等待管理员审核", "submission": dict(submission)}), 201
 
 
 @app.post("/api/merchant/stalls/<int:stall_id>/open")
@@ -931,6 +1391,8 @@ def list_admin_submissions() -> Any:
 
     status = request.args.get("status", "pending")
     q = str(request.args.get("q", "")).strip()
+    submitter_role = str(request.args.get("submitter_role", "")).strip()
+    submission_mode = str(request.args.get("submission_mode", "")).strip()
     page, page_size, offset = parse_pagination(default_page_size=20, max_page_size=100)
     db = get_db()
     sql = "SELECT * FROM submissions WHERE 1=1"
@@ -938,10 +1400,16 @@ def list_admin_submissions() -> Any:
     if status:
         sql += " AND status = ?"
         params.append(status)
+    if submitter_role:
+        sql += " AND submitter_role = ?"
+        params.append(submitter_role)
+    if submission_mode:
+        sql += " AND submission_mode = ?"
+        params.append(submission_mode)
     if q:
-        sql += " AND (merchant_name LIKE ? OR name LIKE ? OR category LIKE ? OR action LIKE ?)"
+        sql += " AND (submitter_name LIKE ? OR merchant_name LIKE ? OR name LIKE ? OR category LIKE ? OR action LIKE ? OR submission_mode LIKE ?)"
         like_q = f"%{q}%"
-        params.extend([like_q, like_q, like_q, like_q])
+        params.extend([like_q, like_q, like_q, like_q, like_q, like_q])
 
     count_row = db.execute(f"SELECT COUNT(*) FROM ({sql})", tuple(params)).fetchone()
     total = int(count_row[0]) if count_row else 0
@@ -949,6 +1417,46 @@ def list_admin_submissions() -> Any:
     params.extend([page_size, offset])
     rows = db.execute(sql, tuple(params)).fetchall()
     return jsonify(make_paginated_result([dict(r) for r in rows], total, page, page_size))
+
+
+@app.get("/api/admin/submissions/<int:submission_id>/preview")
+def get_admin_submission_preview(submission_id: int) -> Any:
+    _, err = require_role({"admin"})
+    if err is not None:
+        return err
+
+    db = get_db()
+    submission_row = db.execute("SELECT * FROM submissions WHERE id = ?", (submission_id,)).fetchone()
+    if submission_row is None:
+        return jsonify({"message": "提交记录不存在"}), 404
+
+    submission = dict(submission_row)
+    source_stall: dict[str, Any] | None = None
+    preview_reviews: list[dict[str, Any]] = []
+    can_approve = submission["status"] == "pending"
+    preview_notice = ""
+
+    if submission.get("action") == "update" and submission.get("target_stall_id"):
+        source_stall = fetch_stall_detail(db, int(submission["target_stall_id"]), include_all_status=True)
+        if source_stall is None:
+            can_approve = False
+            preview_notice = "目标摊位不存在，无法通过该修改提交。"
+        else:
+            preview_reviews = fetch_stall_reviews(db, int(submission["target_stall_id"]), include_all=True)
+
+    preview_stall = build_submission_preview_stall(submission_row, source_stall)
+    diff_fields = compute_submission_diff_fields(submission_row, source_stall)
+    return jsonify(
+        {
+            "submission": submission,
+            "preview_stall": preview_stall,
+            "source_stall": source_stall,
+            "diff_fields": diff_fields,
+            "can_approve": can_approve,
+            "preview_reviews": preview_reviews,
+            "preview_notice": preview_notice,
+        }
+    )
 
 
 @app.post("/api/admin/submissions/<int:submission_id>/approve")
@@ -966,6 +1474,8 @@ def approve_submission(submission_id: int) -> Any:
         return jsonify({"message": "该提交已审核，无法重复操作"}), 400
 
     action = submission["action"] or "create"
+    submitter_name = str(submission["submitter_name"] or submission["merchant_name"] or "")
+    submitter_role = str(submission["submitter_role"] or "merchant")
 
     if action == "update" and submission["target_stall_id"]:
         target = db.execute(
@@ -975,26 +1485,9 @@ def approve_submission(submission_id: int) -> Any:
         if target is None:
             return jsonify({"message": "目标摊位不存在"}), 404
 
-        db.execute(
-            """
-            UPDATE stalls
-            SET name = ?, category = ?, description = ?, image_url = ?, open_time = ?, lng = ?, lat = ?, heat = ?,
-                status = 'approved', merchant_name = ?
-            WHERE id = ?
-            """,
-            (
-                submission["name"],
-                submission["category"],
-                submission["description"],
-                submission["image_url"],
-                submission["open_time"],
-                float(submission["lng"]),
-                float(submission["lat"]),
-                float(submission["heat"]),
-                submission["merchant_name"],
-                int(submission["target_stall_id"]),
-            ),
-        )
+        ok, message = apply_submission_to_existing_stall(db, submission, int(submission["target_stall_id"]))
+        if not ok:
+            return jsonify({"message": message}), 400
     else:
         db.execute(
             """
@@ -1028,8 +1521,8 @@ def approve_submission(submission_id: int) -> Any:
     )
     create_notification(
         db,
-        username=submission["merchant_name"],
-        role="merchant",
+        username=submitter_name,
+        role=submitter_role,
         title="提交审核通过",
         content=f"您的摊位提交（{submission['name']}）已审核通过。",
         related_type="submission",
@@ -1072,12 +1565,17 @@ def reject_submission(submission_id: int) -> Any:
         operator_name=admin_user["username"],
         detail=reject_reason,
     )
-    submission = db.execute("SELECT merchant_name, name FROM submissions WHERE id = ?", (submission_id,)).fetchone()
+    submission = db.execute(
+        "SELECT merchant_name, submitter_name, submitter_role, name FROM submissions WHERE id = ?",
+        (submission_id,),
+    ).fetchone()
     if submission is not None:
+        submitter_name = str(submission["submitter_name"] or submission["merchant_name"] or "")
+        submitter_role = str(submission["submitter_role"] or "merchant")
         create_notification(
             db,
-            username=submission["merchant_name"],
-            role="merchant",
+            username=submitter_name,
+            role=submitter_role,
             title="提交审核驳回",
             content=f"您的摊位提交被驳回，原因：{reject_reason}",
             related_type="submission",
@@ -1130,6 +1628,8 @@ def batch_review_submissions() -> Any:
 
         if action == "approve":
             sub_action = submission["action"] or "create"
+            submitter_name = str(submission["submitter_name"] or submission["merchant_name"] or "")
+            submitter_role = str(submission["submitter_role"] or "merchant")
             if sub_action == "update" and submission["target_stall_id"]:
                 target = db.execute(
                     "SELECT id FROM stalls WHERE id = ?",
@@ -1138,26 +1638,10 @@ def batch_review_submissions() -> Any:
                 if target is None:
                     skipped.append({"id": sid, "reason": "目标摊位不存在"})
                     continue
-                db.execute(
-                    """
-                    UPDATE stalls
-                    SET name = ?, category = ?, description = ?, image_url = ?, open_time = ?, lng = ?, lat = ?, heat = ?,
-                        status = 'approved', merchant_name = ?
-                    WHERE id = ?
-                    """,
-                    (
-                        submission["name"],
-                        submission["category"],
-                        submission["description"],
-                        submission["image_url"],
-                        submission["open_time"],
-                        float(submission["lng"]),
-                        float(submission["lat"]),
-                        float(submission["heat"]),
-                        submission["merchant_name"],
-                        int(submission["target_stall_id"]),
-                    ),
-                )
+                ok, message = apply_submission_to_existing_stall(db, submission, int(submission["target_stall_id"]))
+                if not ok:
+                    skipped.append({"id": sid, "reason": message})
+                    continue
             else:
                 db.execute(
                     """
@@ -1190,8 +1674,8 @@ def batch_review_submissions() -> Any:
             )
             create_notification(
                 db,
-                username=submission["merchant_name"],
-                role="merchant",
+                username=submitter_name,
+                role=submitter_role,
                 title="提交审核通过",
                 content=f"您的摊位提交（{submission['name']}）已审核通过。",
                 related_type="submission",
@@ -1212,8 +1696,8 @@ def batch_review_submissions() -> Any:
             )
             create_notification(
                 db,
-                username=submission["merchant_name"],
-                role="merchant",
+                username=str(submission["submitter_name"] or submission["merchant_name"] or ""),
+                role=str(submission["submitter_role"] or "merchant"),
                 title="提交审核驳回",
                 content=f"您的摊位提交被驳回，原因：{reject_reason}",
                 related_type="submission",
@@ -1812,6 +2296,42 @@ def list_admin_stalls() -> Any:
     params.extend([page_size, offset])
     rows = db.execute(sql, tuple(params)).fetchall()
     return jsonify(make_paginated_result([dict(r) for r in rows], total, page, page_size))
+
+
+@app.get("/api/admin/stalls/<int:stall_id>/detail")
+def get_admin_stall_detail(stall_id: int) -> Any:
+    _, err = require_role({"admin"})
+    if err is not None:
+        return err
+
+    db = get_db()
+    stall = fetch_stall_detail(db, stall_id, include_all_status=True)
+    if stall is None:
+        return jsonify({"message": "摊位不存在"}), 404
+    return jsonify(stall)
+
+
+@app.get("/api/admin/stalls/<int:stall_id>/reviews")
+def list_admin_stall_reviews(stall_id: int) -> Any:
+    _, err = require_role({"admin"})
+    if err is not None:
+        return err
+
+    include_all = str(request.args.get("include_all", "0")).strip() == "1"
+    focus_review_id_raw = request.args.get("focus_review_id")
+    if focus_review_id_raw not in (None, ""):
+        try:
+            int(focus_review_id_raw)
+        except (TypeError, ValueError):
+            return jsonify({"message": "焦点评价 ID 格式错误"}), 400
+
+    db = get_db()
+    stall = db.execute("SELECT id FROM stalls WHERE id = ?", (stall_id,)).fetchone()
+    if stall is None:
+        return jsonify({"message": "摊位不存在"}), 404
+
+    reviews = fetch_stall_reviews(db, stall_id, include_all=include_all)
+    return jsonify({"items": reviews, "focus_review_id": focus_review_id_raw})
 
 
 @app.post("/api/admin/stalls/<int:stall_id>/offline")

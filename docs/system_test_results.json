@@ -1,0 +1,236 @@
+﻿{
+  "environment": {
+    "os": "Windows 10",
+    "language": "Python 3.10",
+    "framework": "Flask",
+    "database": "SQLite",
+    "map_component": "Leaflet",
+    "browser": "Chrome / Edge",
+    "api_test_tool": "Flask test_client + SQLite 查询"
+  },
+  "base_counts": {
+    "users": 54,
+    "stalls": 120,
+    "reviews": 468,
+    "submissions": 6,
+    "notifications": 6,
+    "audit_logs": 6
+  },
+  "post_run_counts": {
+    "users": 55,
+    "stalls": 123,
+    "reviews": 469,
+    "submissions": 10,
+    "notifications": 12,
+    "audit_logs": 13
+  },
+  "test_cases": [
+    {
+      "case_id": "TC01",
+      "category": "普通用户",
+      "objective": "用户登录",
+      "expected": "正确账号密码登录后返回 Token",
+      "actual": "登录成功并返回 Token",
+      "passed": true,
+      "status_code": 200
+    },
+    {
+      "case_id": "TC02",
+      "category": "普通用户",
+      "objective": "地图浏览",
+      "expected": "摊位列表正常返回并可用于地图点位渲染",
+      "actual": "返回 20 条摊位记录",
+      "passed": true,
+      "status_code": 200
+    },
+    {
+      "case_id": "TC03",
+      "category": "普通用户",
+      "objective": "关键字筛选",
+      "expected": "输入关键字后返回匹配摊位",
+      "actual": "关键字“扬帆老长”匹配 7 条记录",
+      "passed": true,
+      "status_code": 200
+    },
+    {
+      "case_id": "TC04",
+      "category": "普通用户",
+      "objective": "评价提交",
+      "expected": "评价写入数据库并进入待审核状态",
+      "actual": "评价状态为 pending",
+      "passed": true,
+      "status_code": 201
+    },
+    {
+      "case_id": "TC09",
+      "category": "商户",
+      "objective": "评价回复",
+      "expected": "商户可回复本摊位用户评价并写入记录",
+      "actual": "回复成功并写入评价表",
+      "passed": true,
+      "status_code": 200
+    },
+    {
+      "case_id": "TC05",
+      "category": "普通用户",
+      "objective": "查看商户回复",
+      "expected": "审核通过后的评价可查看商户回复内容",
+      "actual": "已查询到商户回复",
+      "passed": true,
+      "status_code": 200
+    },
+    {
+      "case_id": "TC06",
+      "category": "商户",
+      "objective": "新增摊位申请",
+      "expected": "提交后进入待审核状态",
+      "actual": "提交状态为 pending",
+      "passed": true,
+      "status_code": 201
+    },
+    {
+      "case_id": "TC07",
+      "category": "商户",
+      "objective": "修改摊位申请",
+      "expected": "修改申请提交后进入待审核状态",
+      "actual": "提交状态为 pending",
+      "passed": true,
+      "status_code": 201
+    },
+    {
+      "case_id": "TC08",
+      "category": "商户",
+      "objective": "开摊与收摊",
+      "expected": "开摊后状态变为营业中，收摊后恢复休息中",
+      "actual": "开摊与收摊均执行成功",
+      "passed": true,
+      "status_code": 200
+    },
+    {
+      "case_id": "TC11",
+      "category": "管理员",
+      "objective": "摊位审核通过",
+      "expected": "审核通过后摊位进入公开列表",
+      "actual": "摊位已写入主表并处于 approved 状态",
+      "passed": true,
+      "status_code": 200
+    },
+    {
+      "case_id": "TC12",
+      "category": "管理员",
+      "objective": "摊位审核驳回",
+      "expected": "审核驳回后记录拒绝原因",
+      "actual": "状态=rejected，原因=系统测试驳回说明",
+      "passed": true,
+      "status_code": 200
+    },
+    {
+      "case_id": "TC13",
+      "category": "管理员",
+      "objective": "批量审核",
+      "expected": "多条待审核记录可一次性审核通过",
+      "actual": "done=2，skipped=0",
+      "passed": true,
+      "status_code": 200
+    },
+    {
+      "case_id": "TC14",
+      "category": "管理员",
+      "objective": "冻结用户",
+      "expected": "被冻结账号无法登录",
+      "actual": "登录返回 403，提示：账号已被冻结",
+      "passed": true,
+      "status_code": 403
+    },
+    {
+      "case_id": "TC10",
+      "category": "商户",
+      "objective": "查看系统通知",
+      "expected": "可查看审核结果等通知信息",
+      "actual": "共查询到 8 条通知",
+      "passed": true,
+      "status_code": 200
+    },
+    {
+      "case_id": "TC15",
+      "category": "管理员",
+      "objective": "日志查看",
+      "expected": "管理员可查询审核和用户管理日志",
+      "actual": "返回 13 条日志记录",
+      "passed": true,
+      "status_code": 200
+    },
+    {
+      "case_id": "EX01",
+      "category": "异常",
+      "objective": "未授权访问",
+      "expected": "未携带 Token 访问受保护接口时返回 401",
+      "actual": "返回 401，提示：未登录或登录已过期",
+      "passed": true,
+      "status_code": 401
+    },
+    {
+      "case_id": "EX02",
+      "category": "异常",
+      "objective": "参数错误",
+      "expected": "缺少必要参数时拒绝请求",
+      "actual": "返回 400，提示：摊位 ID 格式错误",
+      "passed": true,
+      "status_code": 400
+    },
+    {
+      "case_id": "EX03",
+      "category": "异常",
+      "objective": "重复审核",
+      "expected": "同一提交重复审核时应阻止重复操作",
+      "actual": "返回 400，提示：该提交已审核，无法重复操作",
+      "passed": true,
+      "status_code": 400
+    },
+    {
+      "case_id": "EX04",
+      "category": "异常",
+      "objective": "越权访问",
+      "expected": "普通用户访问管理员接口时返回 403",
+      "actual": "返回 403，提示：无权限执行此操作",
+      "passed": true,
+      "status_code": 403
+    }
+  ],
+  "benchmarks": [
+    {
+      "name": "login_user",
+      "rounds": 20,
+      "avg_ms": 0.88,
+      "median_ms": 0.83,
+      "p95_ms": 1.16,
+      "max_ms": 1.24
+    },
+    {
+      "name": "list_stalls_20",
+      "rounds": 20,
+      "avg_ms": 25.12,
+      "median_ms": 24.84,
+      "p95_ms": 27.19,
+      "max_ms": 27.6
+    },
+    {
+      "name": "heatmap_density",
+      "rounds": 20,
+      "avg_ms": 3.06,
+      "median_ms": 3.02,
+      "p95_ms": 3.45,
+      "max_ms": 3.51
+    },
+    {
+      "name": "admin_stalls_20",
+      "rounds": 20,
+      "avg_ms": 9.06,
+      "median_ms": 8.79,
+      "p95_ms": 12.0,
+      "max_ms": 12.22
+    }
+  ],
+  "pass_count": 19,
+  "fail_count": 0
+}
